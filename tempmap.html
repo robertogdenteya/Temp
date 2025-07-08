@@ -61,7 +61,7 @@
   let allMarkers = [];
 
  // Automated map upload - file location must be same as this html file
-  Papa.parse('https://robertogdenteya.github.io/temp/TeyaMapTest3.csv', {
+  Papa.parse('https://robertogdenteya.github.io/Temp/TeyaMapTest3.csv', {
     download: true,
    header: true,
     dynamicTyping: true,
@@ -100,7 +100,7 @@
       const postcode = row.Postcode;
       if (!isNaN(lat) && !isNaN(lon)) {
        const customIcon = L.icon({
-  iconUrl: 'https://robertogdenteya.github.io/temp/teya-icon.png', // update path if needed
+  iconUrl: 'https://robertogdenteya.github.io/Temp/teya-icon.png', // update path if needed
   iconSize: [32, 32], // size of the icon
   iconAnchor: [16, 32], // point of the icon which will correspond to marker's location
   popupAnchor: [0, -32] // point from which the popup should open relative to the iconAnchor
