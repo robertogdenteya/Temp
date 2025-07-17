@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Teya ISC Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <!-- MarkerCluster CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
+
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { height: 90vh; width: 100%; }
+    #controls {
+      padding: 10px;
+      background: #f8f8f8;
+      border-bottom: 1px solid #ccc;
+    }
+    select, input[type="text"] {
+      margin-right: 10px;
+      padding: 5px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="controls">
+ <!-- <input type="file" id="csv-file" accept=".csv" /> -->
+  <label for="search">Search:</label>
+  <input type="text" id="name-search" placeholder="Search by name...">
+
+  <label for="type-filter">Team:</label>
+  <select id="type-filter">
+    <option value="">All</option>
+  </select>
+
+  <label for="category-filter">Stage:</label>
+  <select id="category-filter">
+    <option value="">All</option>
+  </select>
+</div>
+
+<div id="map"></div>
+
+<!-- Libraries -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<script>
+  let map = L.map('map').setView([54.5, -3], 6); // UK center
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  const markerCluster = L.markerClusterGroup();
+  let allData = [];
+  let allMarkers = [];
+
+ // Automated map upload - file location must be same as this html file
+  Papa.parse('https://robertogdenteya.github.io/member-map/UK-ISC-List3.csv', {
+    download: true,
+   header: true,
+    dynamicTyping: true,
+    skipEmptyLines: true,
+    complete: function (results) {
+      allData = results.data;
+      buildMap(allData);
+      populateFilterOptions(allData);
+    }
+  });
+
+  //manual map upload
+//document.getElementById('csv-file').addEventListener('change', function (e) {
+ //   Papa.parse(e.target.files[0], {
+ //     header: true,
+ //     dynamicTyping: true,
+ //      skipEmptyLines: true,
+ //     complete: function (results) {
+ //      allData = results.data;
+ //      buildMap(allData);
+ //       populateFilterOptions(allData);
+ //     }
+ //  });
+ // });
+
+  function buildMap(data) {
+    markerCluster.clearLayers();
+    allMarkers = [];
+
+    data.forEach(row => {
+      const lat = parseFloat(row.Latitude);
+      const lon = parseFloat(row.Longitude);
+      const name = row.Name;
+      const type = row.Team;
+      const category = row.Stage;
+      const postcode = row.Postcode;
+      if (!isNaN(lat) && !isNaN(lon)) {
+       const customIcon = L.icon({
+  iconUrl: 'https://robertogdenteya.github.io/member-map/teya-icon.png', // update path if needed
+  iconSize: [32, 32], // size of the icon
+  iconAnchor: [16, 32], // point of the icon which will correspond to marker's location
+  popupAnchor: [0, -32] // point from which the popup should open relative to the iconAnchor
+});
+
+const marker = L.marker([lat, lon], { icon: customIcon }).bindPopup(
+  `<strong>${name}</strong><br>${type}<br>${category}<br>${postcode}`
+);
+        
+       
+        marker.type = type;
+        marker.category = category;
+        marker.name = name;
+        allMarkers.push(marker);
+      }
+    });
+
+    allMarkers.forEach(m => markerCluster.addLayer(m));
+    map.addLayer(markerCluster);
+  }
+
+  function populateFilterOptions(data) {
+    const typeSelect = document.getElementById('type-filter');
+    const categorySelect = document.getElementById('category-filter');
+
+    const uniqueTypes = Array.from(new Set(data.map(row => row.Team))).sort();
+    const uniqueCategories = Array.from(new Set(data.map(row => row.Stage))).sort();
+
+    uniqueTypes.forEach(type => {
+      const opt = document.createElement('option');
+      opt.value = type;
+      opt.textContent = type;
+      typeSelect.appendChild(opt);
+    });
+
+    uniqueCategories.forEach(category => {
+      const opt = document.createElement('option');
+      opt.value = category;
+      opt.textContent = category;
+      categorySelect.appendChild(opt);
+    });
+
+    typeSelect.addEventListener('change', applyFilters);
+    categorySelect.addEventListener('change', applyFilters);
+    document.getElementById('name-search').addEventListener('input', applyFilters);
+  }
+
+  function applyFilters() {
+    const selectedType = document.getElementById('type-filter').value;
+    const selectedCategory = document.getElementById('category-filter').value;
+    const searchTerm = document.getElementById('name-search').value.trim().toLowerCase();
+
+    const filtered = allData.filter(row => {
+      const matchType = selectedType ? row.Team === selectedType : true;
+      const matchCategory = selectedCategory ? row.Stage === selectedCategory : true;
+      const matchSearch = searchTerm ? String(row.Name || '').toLowerCase().includes(searchTerm) : true;
+      return matchType && matchCategory && matchSearch;
+    });
+
+    buildMap(filtered);
+  }
+</script>
+
+</body>
+</html>
