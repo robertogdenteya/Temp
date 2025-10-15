@@ -2,59 +2,46 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Teya Merchant Map (Leaflet + Geoapify)</title>
+  <title>Teya Merchant Geocode Table</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-
-  <!-- Leaflet -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-
-  <!-- Marker clustering -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-
-  <!-- CSV parser -->
-  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-
   <style>
-    html, body { height: 100%; margin: 0; }
-    #map { height: 60vh; }
-    .panel { padding: 10px 12px; font: 14px/1.35 system-ui, sans-serif; }
-    .status {
-      position: absolute; z-index: 500; top: 10px; left: 10px;
-      background: #fff; padding: 8px 10px; border-radius: 8px;
-      box-shadow: 0 2px 10px rgba(0,0,0,.15);
-      max-width: 440px;
-    }
-    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
-    .controls button, .controls label { font-size: 13px; }
-    .tt { line-height: 1.2; } .tt strong { display:block; }
-    table { border-collapse: collapse; width: 100%; font-size: 13px; }
-    th, td { border: 1px solid #ddd; padding: 6px 8px; white-space: nowrap; }
-    th { position: sticky; top: 0; background: #fafafa; z-index: 1; }
-    .table-wrap { height: 40vh; overflow: auto; border-top: 1px solid #eee; }
-    .muted { opacity: .75; }
-    code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; }
+    :root { --fg:#111; --muted:#6b7280; --bd:#e5e7eb; --bg:#fff; --chip:#f3f4f6; }
+    html,body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding:14px 16px; border-bottom:1px solid var(--bd); }
+    h1 { margin:0 0 4px; font-size:18px; }
+    .muted { color:var(--muted); }
+    .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--bd); }
+    button { padding:6px 10px; border:1px solid var(--bd); background:#fff; border-radius:8px; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    label { display:flex; align-items:center; gap:6px; }
+    .status { margin-left:auto; font-variant-numeric: tabular-nums; }
+    .wrap { height: calc(100vh - 122px); padding:10px 16px; }
+    .table-wrap { height:100%; overflow:auto; border:1px solid var(--bd); border-radius:10px; }
+    table { border-collapse:collapse; width:100%; font-size:13px; }
+    th, td { border-bottom:1px solid var(--bd); padding:8px 10px; white-space:nowrap; }
+    th { position:sticky; top:0; background:#fafafa; z-index:1; text-align:left; }
+    code { background:var(--chip); padding:1px 4px; border-radius:6px; }
   </style>
 </head>
 <body>
-  <div id="map"></div>
+  <header>
+    <h1>Teya Merchant Geocode Table</h1>
+    <div class="muted">Source CSV: <code>merchantmap-oct2025.csv</code></div>
+  </header>
 
-  <!-- Floating status on map -->
-  <div id="status" class="status">
-    <strong>Teya Merchant Map</strong><br>
-    <span class="muted">Loading <code>merchantmap-oct2025.csv</code>…</span>
+  <div class="bar">
+    <button id="copyBtn" disabled>Copy table</button>
+    <button id="downloadBtn" disabled>Download CSV</button>
+    <label><input type="checkbox" id="successOnly"> Show only successfully geocoded</label>
+    <label title="Higher = faster, but watch rate limits"><span class="muted">Concurrency</span>
+      <select id="concurrency">
+        <option>3</option><option selected>5</option><option>8</option><option>10</option><option>15</option>
+      </select>
+    </label>
+    <span class="status" id="status">Loading…</span>
   </div>
 
-  <!-- Data / export panel -->
-  <div class="panel">
-    <div class="controls">
-      <button id="copyBtn" disabled>Copy table</button>
-      <button id="downloadBtn" disabled>Download CSV</button>
-      <label><input type="checkbox" id="successOnly"> Show only successfully geocoded</label>
-      <span class="muted" id="counts"></span>
-    </div>
+  <div class="wrap">
     <div class="table-wrap">
       <table id="dataTable">
         <thead>
@@ -80,268 +67,197 @@
     const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa"; // e.g. "994b9182b34b40378d2116c40baa4faa"
     const CSV_PATH = "merchantmap-oct2025.csv";
 
-    // Map your CSV column names here
+    // CSV column mapping
     const COLS = {
       name: "MERCHANT_NAME",
       activity: "BUSINESS_ACTIVITY",
       street: "address.street",
       city: "address.city",
       zip: "address.zip",
-      countryA3: "MERCHANT_COUNTRY" // alpha-3 (GBR, HRV, PRT, CZE, HUN, SVK, ISL, etc.)
+      countryA3: "MERCHANT_COUNTRY" // alpha-3 e.g., GBR, HRV, PRT, CZE, HUN, SVK, ISL
     };
 
-    // Alpha-3 to Alpha-2 conversion (extend as needed)
+    // Alpha-3 → Alpha-2 (lowercase) for Geoapify countrycode filter
     const A3_TO_A2 = {
-      GBR: "gb", HRV: "hr", PRT: "pt", CZE: "cz", HUN: "hu", SVK: "sk", ISL: "is",
-      IRL: "ie", FRA: "fr", DEU: "de", ESP: "es", ITA: "it", NLD: "nl", BEL: "be",
-      AUT: "at", POL: "pl", ROU: "ro", GRC: "gr", SWE: "se", FIN: "fi", DNK: "dk",
-      NOR: "no", CHE: "ch", USA: "us", CAN: "ca", AUS: "au", NZL: "nz"
+      GBR:"gb", HRV:"hr", PRT:"pt", CZE:"cz", HUN:"hu", SVK:"sk", ISL:"is",
+      IRL:"ie", FRA:"fr", DEU:"de", ESP:"es", ITA:"it", NLD:"nl", BEL:"be",
+      AUT:"at", POL:"pl", ROU:"ro", GRC:"gr", SWE:"se", FIN:"fi", DNK:"dk",
+      NOR:"no", CHE:"ch", USA:"us", CAN:"ca", AUS:"au", NZL:"nz"
     };
 
-    // ===== MAP INIT =====
-    const map = L.map('map').setView([51.5074, -0.1278], 6);
-    const isRetina = L.Browser.retina;
-    const tileUrl = isRetina
-      ? `https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}@2x.png?apiKey=${GEOAPIFY_KEY}`
-      : `https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}.png?apiKey=${GEOAPIFY_KEY}`;
-
-    L.tileLayer(tileUrl, {
-      maxZoom: 20,
-      attribution:
-        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, ' +
-        '© <a href="https://www.openmaptiles.org/">OpenMapTiles</a>, ' +
-        '<a href="https://www.geoapify.com/">Powered by Geoapify</a>'
-    }).addTo(map);
-
-    const cluster = L.markerClusterGroup();
-    map.addLayer(cluster);
-
+    // ===== UI elements =====
     const statusEl = document.getElementById("status");
-    const table = document.getElementById("dataTable");
-    const tbody = table.querySelector("tbody");
+    const tbody = document.querySelector("#dataTable tbody");
     const successOnlyEl = document.getElementById("successOnly");
-    const countsEl = document.getElementById("counts");
     const copyBtn = document.getElementById("copyBtn");
     const downloadBtn = document.getElementById("downloadBtn");
+    const concurrencySel = document.getElementById("concurrency");
 
-    // ===== Helpers =====
-    function esc(s=""){
-      return s.replace(/[&<>"'`=\/]/g, c =>
-        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','/':'&#x2F;','`':'&#x60;','=':'&#x3D;'}[c])
-      );
-    }
-
-    function alpha3To2(a3){
-      if (!a3) return "";
-      const key = String(a3).trim().toUpperCase();
-      return A3_TO_A2[key] || "";
-    }
-
-    function buildAddress(row) {
-      const parts = [
-        (row[COLS.street] || "").trim(),
-        (row[COLS.city]   || "").trim(),
-        (row[COLS.zip]    || "").trim(),
-      ].filter(Boolean);
-      const base = parts.join(", ");
-      // We won't append country textually; the filter/bias will constrain results more reliably.
-      return base;
-    }
-
-    function tooltipHtml(row, fullAddr, a3) {
-      const name = esc(row[COLS.name] || "(Unnamed)");
-      const act  = esc(row[COLS.activity] || "—");
-      const addr = esc(fullAddr || "—");
-      const cc   = esc(a3 || "");
-      return `<div class="tt"><strong>${name}</strong>${act}<br>${addr}${cc ? `, ${cc}` : ""}</div>`;
-    }
-
-    function rowToDisplay(record){
-      return [
-        record[COLS.name] || "",
-        record[COLS.activity] || "",
-        record[COLS.street] || "",
-        record[COLS.city] || "",
-        record[COLS.zip] || "",
-        record[COLS.countryA3] || "",
-        record.lat ?? "",
-        record.lon ?? "",
-        record.status || ""
-      ];
-    }
-
-    function renderTable() {
-      const onlySuccess = successOnlyEl.checked;
-      const frag = document.createDocumentFragment();
-
-      let ok = 0, fail = 0;
-      for (const r of records) {
-        if (onlySuccess && r.status !== "ok") continue;
-        if (r.status === "ok") ok++; else fail++;
-
-        const tr = document.createElement("tr");
-        for (const cell of rowToDisplay(r)) {
-          const td = document.createElement("td");
-          td.textContent = cell;
-          tr.appendChild(td);
-        }
-        frag.appendChild(tr);
-      }
-      tbody.innerHTML = "";
-      tbody.appendChild(frag);
-
-      const totalOk = records.filter(x => x.status === "ok").length;
-      const totalFail = records.filter(x => x.status !== "ok").length;
-      const shown = tbody.children.length;
-      countsEl.textContent = `Showing ${shown} rows | Success: ${totalOk} | Failures: ${totalFail}`;
-      copyBtn.disabled = shown === 0;
-      downloadBtn.disabled = records.length === 0;
-    }
-
-    function toCsv(recordsArr){
-      const headers = [
-        COLS.name, COLS.activity, COLS.street, COLS.city, COLS.zip, COLS.countryA3, "lat", "lon", "status"
-      ];
-      const lines = [headers.join(",")];
-
-      for (const r of recordsArr) {
-        const vals = [
-          r[COLS.name] || "",
-          r[COLS.activity] || "",
-          r[COLS.street] || "",
-          r[COLS.city] || "",
-          r[COLS.zip] || "",
-          r[COLS.countryA3] || "",
-          r.lat ?? "",
-          r.lon ?? "",
-          r.status || ""
-        ].map(v => {
-          const s = String(v);
-          return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-        });
-        lines.push(vals.join(","));
-      }
-      return lines.join("\n");
-    }
-
-    async function copyTableToClipboard(){
-      const onlySuccess = successOnlyEl.checked;
-      const view = records.filter(r => onlySuccess ? r.status === "ok" : true);
-      const csv = toCsv(view);
-      await navigator.clipboard.writeText(csv);
-      copyBtn.textContent = "Copied!";
-      setTimeout(() => copyBtn.textContent = "Copy table", 1200);
-    }
-
-    function downloadCsv(){
-      const csv = toCsv(records);
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "merchantmap-with-geocodes.csv";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    }
-
-    copyBtn.addEventListener("click", copyTableToClipboard);
-    downloadBtn.addEventListener("click", downloadCsv);
-    successOnlyEl.addEventListener("change", renderTable);
-
-    // ===== Geocode cache (keyed by address + country) =====
-    const geocodeCache = new Map();
+    // ===== State =====
+    const records = [];                  // enriched rows for UI/export
+    const geocodeCache = new Map();      // in-memory cache
     loadCache();
+
     function loadCache(){
-      try{
-        const raw = localStorage.getItem("geocodeCache");
+      try {
+        const raw = localStorage.getItem("geocodeCache_table_only");
         if (!raw) return;
         const obj = JSON.parse(raw);
         for (const [k,v] of Object.entries(obj)) geocodeCache.set(k, v);
       } catch {}
     }
     function saveCache(){
-      localStorage.setItem("geocodeCache", JSON.stringify(Object.fromEntries(geocodeCache)));
+      localStorage.setItem("geocodeCache_table_only", JSON.stringify(Object.fromEntries(geocodeCache)));
     }
 
-    // Rate-limited queue
-    const queue = [];
-    let running = false;
-    const RPS = 5; // lower if you see 429s
-    const INTERVAL_MS = Math.ceil(1000 / RPS);
-    function enqueue(fn){ queue.push(fn); if (!running) runQueue(); }
-    async function runQueue(){
-      running = true;
-      while(queue.length){
-        await queue.shift()();
-        await new Promise(r => setTimeout(r, INTERVAL_MS));
+    function esc(s=""){
+      return String(s).replace(/[&<>"'`=\/]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','/':'&#x2F;','`':'&#x60;','=':'&#x3D;'}[c]);
+    }
+    function buildAddress(row){
+      const parts = [(row[COLS.street]||"").trim(), (row[COLS.city]||"").trim(), (row[COLS.zip]||"").trim()].filter(Boolean);
+      return parts.join(", ");
+    }
+    function alpha3To2(a3){
+      if (!a3) return "";
+      return A3_TO_A2[String(a3).trim().toUpperCase()] || "";
+    }
+
+    // Render table from current records[]
+    function renderTable(){
+      const onlySuccess = successOnlyEl.checked;
+      const frag = document.createDocumentFragment();
+      for (const r of records){
+        if (onlySuccess && r.status !== "ok") continue;
+        const tr = document.createElement("tr");
+        const vals = [
+          r[COLS.name] || "", r[COLS.activity] || "", r[COLS.street] || "",
+          r[COLS.city] || "", r[COLS.zip] || "", r[COLS.countryA3] || "",
+          r.lat ?? "", r.lon ?? "", r.status || ""
+        ];
+        for (const val of vals){
+          const td = document.createElement("td"); td.textContent = val; tr.appendChild(td);
+        }
+        frag.appendChild(tr);
       }
-      running = false;
+      tbody.innerHTML = ""; tbody.appendChild(frag);
+
+      const ok = records.filter(x => x.status === "ok").length;
+      const fail = records.filter(x => x.status !== "ok").length;
+      const shown = tbody.children.length;
+      statusEl.textContent = `Showing ${shown} | Success: ${ok} | Failures: ${fail}`;
+      copyBtn.disabled = shown === 0;
+      downloadBtn.disabled = records.length === 0;
     }
 
-    // Geocode with per-row country filter/bias
+    // Export helpers
+    function toCsv(arr){
+      const headers = [COLS.name, COLS.activity, COLS.street, COLS.city, COLS.zip, COLS.countryA3, "lat", "lon", "status"];
+      const out = [headers.join(",")];
+      for (const r of arr){
+        const vals = [
+          r[COLS.name] || "", r[COLS.activity] || "", r[COLS.street] || "",
+          r[COLS.city] || "", r[COLS.zip] || "", r[COLS.countryA3] || "",
+          r.lat ?? "", r.lon ?? "", r.status || ""
+        ].map(s => {
+          const v = String(s);
+          return /[",\n]/.test(v) ? `"${v.replace(/"/g,'""')}"` : v;
+        });
+        out.push(vals.join(","));
+      }
+      return out.join("\n");
+    }
+    async function copyTable(){
+      const onlySuccess = successOnlyEl.checked;
+      const view = records.filter(r => onlySuccess ? r.status === "ok" : true);
+      await navigator.clipboard.writeText(toCsv(view));
+      copyBtn.textContent = "Copied!"; setTimeout(()=>copyBtn.textContent="Copy table", 1200);
+    }
+    function downloadCsv(){
+      const csv = toCsv(records);
+      const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "merchantmap-with-geocodes.csv"; a.click();
+      URL.revokeObjectURL(url);
+    }
+    copyBtn.addEventListener("click", copyTable);
+    downloadBtn.addEventListener("click", downloadCsv);
+    successOnlyEl.addEventListener("change", renderTable);
+    concurrencySel.addEventListener("change", () => { /* only affects future runs */ });
+
+    // Promise pool for faster geocoding
+    async function withConcurrency(tasks, limit){
+      const results = Array(tasks.length);
+      let i = 0, active = 0;
+      return new Promise(resolve => {
+        const run = () => {
+          while (active < limit && i < tasks.length){
+            const cur = i++;
+            active++;
+            tasks[cur]().then(r => results[cur]=r).catch(e => results[cur]=e).finally(()=>{
+              active--;
+              if (results.length === tasks.length && i === tasks.length && active === 0) resolve(results);
+              else run();
+            });
+          }
+        };
+        run();
+      });
+    }
+
+    // Geocode (per-row country filter/bias)
     async function geocodeAddress(address, countryA3){
       const a2 = alpha3To2(countryA3);
-      const cacheKey = `${address.trim().toLowerCase()}|${a2}`;
+      const key = `${address.trim().toLowerCase()}|${a2}`;
       if (!address.trim()) throw new Error("Empty address");
-      if (geocodeCache.has(cacheKey)) return geocodeCache.get(cacheKey);
+      if (geocodeCache.has(key)) return geocodeCache.get(key);
 
       const url = new URL("https://api.geoapify.com/v1/geocode/search");
       url.searchParams.set("text", address);
       url.searchParams.set("apiKey", GEOAPIFY_KEY);
-      if (a2) {
+      if (a2){
         url.searchParams.set("filter", `countrycode:${a2}`);
-        url.searchParams.set("bias",   `countrycode:${a2}`);
+        url.searchParams.set("bias", `countrycode:${a2}`);
       }
 
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Geocode failed: ${res.status} ${res.statusText}`);
       const data = await res.json();
       const feature = data.features && data.features[0];
-      if (!feature) throw new Error(`No result for: ${address} (${countryA3 || "no country"})`);
+      if (!feature) throw new Error(`No result for: ${address} (${countryA3||"no country"})`);
 
       const [lon, lat] = feature.geometry.coordinates;
       const result = { lat, lon, raw: feature };
-      geocodeCache.set(cacheKey, result);
+      geocodeCache.set(key, result);
       saveCache();
       return result;
     }
 
-    // ===== Data pipeline =====
-    const records = [];
-
-    // Load CSV from the repo
-    fetch(CSV_PATH)
-      .then(r => {
-        if (!r.ok) throw new Error(`CSV fetch failed: ${r.status} ${r.statusText}`);
-        return r.text();
-      })
-      .then(text => {
-        statusEl.innerHTML = `Parsing <code>${CSV_PATH}</code>…`;
-        Papa.parse(text, {
-          header: true,
-          skipEmptyLines: true,
-          complete: ({ data: rows }) => plotRows(rows),
-          error: (err) => statusEl.innerHTML = `CSV parse error: ${esc(err.message)}`
+    // Load CSV and process
+    fetch(CSV_PATH).then(r => {
+      if (!r.ok) throw new Error(`CSV fetch failed: ${r.status} ${r.statusText}`);
+      return r.text();
+    }).then(text => {
+      // Simple CSV parse (Papa not required here to keep it light) — but you can swap in Papa if your data is messy.
+      // Minimal parser for commas/quotes:
+      function parseCSV(t){
+        // If your CSV may contain complex quoting/commas, use PapaParse from CDN instead.
+        const rows = t.replace(/\r\n/g,"\n").split("\n").filter(Boolean);
+        // Detect headers
+        const hdr = rows.shift().split(",");
+        const records = rows.map(line => {
+          // naive split; replace with PapaParse for complex CSVs
+          const cols = line.split(",");
+          const obj = {};
+          hdr.forEach((h,idx)=>obj[h]=cols[idx]||"");
+          return obj;
         });
-      })
-      .catch(err => {
-        statusEl.innerHTML = `Error loading <code>${CSV_PATH}</code>: ${esc(err.message)}<br>
-          <span class="muted">Ensure the CSV is in the repo root next to <code>tempmap2.html</code>.</span>`;
-      });
-
-    function plotRows(rows){
-      if (!rows.length){
-        statusEl.textContent = "No rows found in CSV.";
-        return;
+        return { header: hdr, data: records };
       }
+      const { data: rows } = parseCSV(text);
 
-      let processed = 0, failures = 0;
-      const bounds = L.latLngBounds([]);
-
-      // Seed records array
-      for (const row of rows) {
+      // Seed records for table (render immediately)
+      for (const row of rows){
         records.push({
           [COLS.name]: row[COLS.name] || "",
           [COLS.activity]: row[COLS.activity] || "",
@@ -349,64 +265,46 @@
           [COLS.city]: row[COLS.city] || "",
           [COLS.zip]: row[COLS.zip] || "",
           [COLS.countryA3]: row[COLS.countryA3] || "",
-          lat: "",
-          lon: "",
-          status: "pending"
+          lat: "", lon: "", status: "pending"
         });
       }
       renderTable();
 
-      new Promise(resolve => {
-        rows.forEach((row, idx) => {
-          const fullAddr = buildAddress(row);
-          const countryA3 = (row[COLS.countryA3] || "").trim().toUpperCase();
-          if (!fullAddr){ failures++; mark(idx, null, null, "no address"); tick(); return; }
-
-          enqueue(async () => {
-            try{
-              const { lat, lon } = await geocodeAddress(fullAddr, countryA3);
-              const marker = L.marker([lat, lon]);
-
-              // Hover tooltip + popup (show country code too)
-              marker.bindTooltip(tooltipHtml(row, fullAddr, countryA3), { direction: "top", opacity: 0.9 });
-              marker.bindPopup(tooltipHtml(row, fullAddr, countryA3));
-
-              cluster.addLayer(marker);
-              bounds.extend([lat, lon]);
-
-              mark(idx, lat, lon, "ok");
-            } catch(e){
-              console.warn(e.message);
-              failures++;
-              mark(idx, null, null, "fail");
-            } finally {
-              tick();
-            }
-          });
-        });
-
-        function mark(i, lat, lon, status){
-          const rec = records[i];
-          if (!rec) return;
-          if (lat != null) rec.lat = lat;
-          if (lon != null) rec.lon = lon;
-          rec.status = status;
-          if (processed % 20 === 0) renderTable();
-        }
-
-        function tick(){
-          processed++;
-          statusEl.innerHTML = `Geocoded ${processed}/${rows.length} (failures: ${failures})…`;
-          if (processed === rows.length){
-            if (bounds.isValid()) map.fitBounds(bounds.pad(0.15));
-            statusEl.innerHTML = `Done. Plotted ${rows.length - failures} / ${rows.length}.`;
-            renderTable();
-            copyBtn.disabled = false;
-            downloadBtn.disabled = false;
-            resolve();
-          }
+      // Build geocoding tasks
+      const tasks = rows.map((row, idx) => async () => {
+        const addr = buildAddress(row);
+        const a3 = (row[COLS.countryA3]||"").trim().toUpperCase();
+        if (!addr){ mark(idx, null, null, "no address"); return; }
+        try{
+          const { lat, lon } = await geocodeAddress(addr, a3);
+          mark(idx, lat, lon, "ok");
+        } catch(e){
+          console.warn(e.message);
+          mark(idx, null, null, "fail");
         }
       });
+
+      const limit = parseInt(concurrencySel.value, 10) || 5;
+      statusEl.textContent = `Geocoding ${tasks.length} rows… (concurrency ${limit})`;
+
+      withConcurrency(tasks, limit).then(() => {
+        renderTable();
+        copyBtn.disabled = false; downloadBtn.disabled = false;
+        const ok = records.filter(x=>x.status==="ok").length;
+        const fail = records.length - ok;
+        statusEl.textContent = `Done. Success: ${ok} | Failures: ${fail}`;
+      });
+    }).catch(err => {
+      statusEl.textContent = `Error: ${err.message}`;
+    });
+
+    function mark(i, lat, lon, status){
+      const r = records[i]; if (!r) return;
+      if (lat != null) r.lat = lat;
+      if (lon != null) r.lon = lon;
+      r.status = status;
+      // Re-render every ~25 updates to keep UI snappy
+      if (i % 25 === 0) renderTable();
     }
   </script>
 </body>
