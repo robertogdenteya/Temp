@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Teya Merchant Geocode Table</title>
+  <title>Teya Merchant Geocode Table (Robust)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root { --fg:#111; --muted:#6b7280; --bd:#e5e7eb; --bg:#fff; --chip:#f3f4f6; }
-    html,body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    html,body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
     header { padding:14px 16px; border-bottom:1px solid var(--bd); }
     h1 { margin:0 0 4px; font-size:18px; }
     .muted { color:var(--muted); }
@@ -21,19 +21,23 @@
     th, td { border-bottom:1px solid var(--bd); padding:8px 10px; white-space:nowrap; }
     th { position:sticky; top:0; background:#fafafa; z-index:1; text-align:left; }
     code { background:var(--chip); padding:1px 4px; border-radius:6px; }
+    .warn { color:#92400e; background:#fef3c7; border:1px solid #f59e0b; padding:6px 8px; border-radius:8px; }
+    .ok { color:#065f46; background:#ecfdf5; border:1px solid #10b981; padding:6px 8px; border-radius:8px; }
   </style>
+  <!-- PapaParse (robust CSV) -->
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 </head>
 <body>
   <header>
     <h1>Teya Merchant Geocode Table</h1>
-    <div class="muted">Source CSV: <code>merchantmap-oct2025.csv</code></div>
+    <div class="muted">CSV: <code>merchantmap-oct2025.csv</code></div>
   </header>
 
   <div class="bar">
     <button id="copyBtn" disabled>Copy table</button>
     <button id="downloadBtn" disabled>Download CSV</button>
     <label><input type="checkbox" id="successOnly"> Show only successfully geocoded</label>
-    <label title="Higher = faster, but watch rate limits"><span class="muted">Concurrency</span>
+    <label title="Higher = faster, but can hit rate limits"><span class="muted">Concurrency</span>
       <select id="concurrency">
         <option>3</option><option selected>5</option><option>8</option><option>10</option><option>15</option>
       </select>
@@ -42,6 +46,7 @@
   </div>
 
   <div class="wrap">
+    <div id="notice"></div>
     <div class="table-wrap">
       <table id="dataTable">
         <thead>
@@ -62,202 +67,181 @@
     </div>
   </div>
 
-  <script>
-    // ===== CONFIG =====
-    const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa"; // e.g. "994b9182b34b40378d2116c40baa4faa"
-    const CSV_PATH = "merchantmap-oct2025.csv";
+<script>
+const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa"; // e.g. "994b9182b34b40378d2116c40baa4faa"
+const CSV_PATH = "merchantmap-oct2025.csv";
 
-    // CSV column mapping
-    const COLS = {
-      name: "MERCHANT_NAME",
-      activity: "BUSINESS_ACTIVITY",
-      street: "address.street",
-      city: "address.city",
-      zip: "address.zip",
-      countryA3: "MERCHANT_COUNTRY" // alpha-3 e.g., GBR, HRV, PRT, CZE, HUN, SVK, ISL
-    };
+const COLS = {
+  name: "MERCHANT_NAME",
+  activity: "BUSINESS_ACTIVITY",
+  street: "address.street",
+  city: "address.city",
+  zip: "address.zip",
+  countryA3: "MERCHANT_COUNTRY"
+};
 
-    // Alpha-3 → Alpha-2 (lowercase) for Geoapify countrycode filter
-    const A3_TO_A2 = {
-      GBR:"gb", HRV:"hr", PRT:"pt", CZE:"cz", HUN:"hu", SVK:"sk", ISL:"is",
-      IRL:"ie", FRA:"fr", DEU:"de", ESP:"es", ITA:"it", NLD:"nl", BEL:"be",
-      AUT:"at", POL:"pl", ROU:"ro", GRC:"gr", SWE:"se", FIN:"fi", DNK:"dk",
-      NOR:"no", CHE:"ch", USA:"us", CAN:"ca", AUS:"au", NZL:"nz"
-    };
+const A3_TO_A2 = {
+  GBR:"gb", HRV:"hr", PRT:"pt", CZE:"cz", HUN:"hu", SVK:"sk", ISL:"is",
+  IRL:"ie", FRA:"fr", DEU:"de", ESP:"es", ITA:"it", NLD:"nl", BEL:"be",
+  AUT:"at", POL:"pl", ROU:"ro", GRC:"gr", SWE:"se", FIN:"fi", DNK:"dk",
+  NOR:"no", CHE:"ch", USA:"us", CAN:"ca", AUS:"au", NZL:"nz"
+};
 
-    // ===== UI elements =====
-    const statusEl = document.getElementById("status");
-    const tbody = document.querySelector("#dataTable tbody");
-    const successOnlyEl = document.getElementById("successOnly");
-    const copyBtn = document.getElementById("copyBtn");
-    const downloadBtn = document.getElementById("downloadBtn");
-    const concurrencySel = document.getElementById("concurrency");
+const statusEl = document.getElementById("status");
+const noticeEl = document.getElementById("notice");
+const tbody = document.querySelector("#dataTable tbody");
+const copyBtn = document.getElementById("copyBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const successOnlyEl = document.getElementById("successOnly");
+const concurrencySel = document.getElementById("concurrency");
 
-    // ===== State =====
-    const records = [];                  // enriched rows for UI/export
-    const geocodeCache = new Map();      // in-memory cache
-    loadCache();
+const records = [];
+const geocodeCache = new Map();
+loadCache();
 
-    function loadCache(){
-      try {
-        const raw = localStorage.getItem("geocodeCache_table_only");
-        if (!raw) return;
-        const obj = JSON.parse(raw);
-        for (const [k,v] of Object.entries(obj)) geocodeCache.set(k, v);
-      } catch {}
-    }
-    function saveCache(){
-      localStorage.setItem("geocodeCache_table_only", JSON.stringify(Object.fromEntries(geocodeCache)));
-    }
+function loadCache(){
+  try { const raw = localStorage.getItem("geocodeCache_table_only");
+    if (raw){ Object.entries(JSON.parse(raw)).forEach(([k,v])=>geocodeCache.set(k,v)); }
+  } catch {}
+}
+function saveCache(){
+  localStorage.setItem("geocodeCache_table_only", JSON.stringify(Object.fromEntries(geocodeCache)));
+}
 
-    function esc(s=""){
-      return String(s).replace(/[&<>"'`=\/]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','/':'&#x2F;','`':'&#x60;','=':'&#x3D;'}[c]);
-    }
-    function buildAddress(row){
-      const parts = [(row[COLS.street]||"").trim(), (row[COLS.city]||"").trim(), (row[COLS.zip]||"").trim()].filter(Boolean);
-      return parts.join(", ");
-    }
-    function alpha3To2(a3){
-      if (!a3) return "";
-      return A3_TO_A2[String(a3).trim().toUpperCase()] || "";
-    }
+function esc(s=""){ return String(s).replace(/[&<>"'`=\/]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','/':'&#x2F;','`':'&#x60;','=':'&#x3D;'}[c])); }
+function buildAddress(row){
+  const parts = [(row[COLS.street]||"").trim(),(row[COLS.city]||"").trim(),(row[COLS.zip]||"").trim()].filter(Boolean);
+  return parts.join(", ");
+}
+function alpha3To2(a3){ return A3_TO_A2[String(a3||"").trim().toUpperCase()] || ""; }
 
-    // Render table from current records[]
-    function renderTable(){
-      const onlySuccess = successOnlyEl.checked;
-      const frag = document.createDocumentFragment();
-      for (const r of records){
-        if (onlySuccess && r.status !== "ok") continue;
-        const tr = document.createElement("tr");
-        const vals = [
-          r[COLS.name] || "", r[COLS.activity] || "", r[COLS.street] || "",
-          r[COLS.city] || "", r[COLS.zip] || "", r[COLS.countryA3] || "",
-          r.lat ?? "", r.lon ?? "", r.status || ""
-        ];
-        for (const val of vals){
-          const td = document.createElement("td"); td.textContent = val; tr.appendChild(td);
-        }
-        frag.appendChild(tr);
-      }
-      tbody.innerHTML = ""; tbody.appendChild(frag);
+function requireHeaders(hdrs){
+  const required = Object.values(COLS);
+  const missing = required.filter(h => !hdrs.includes(h));
+  return { ok: missing.length === 0, missing };
+}
 
-      const ok = records.filter(x => x.status === "ok").length;
-      const fail = records.filter(x => x.status !== "ok").length;
-      const shown = tbody.children.length;
-      statusEl.textContent = `Showing ${shown} | Success: ${ok} | Failures: ${fail}`;
-      copyBtn.disabled = shown === 0;
-      downloadBtn.disabled = records.length === 0;
-    }
+function renderTable(){
+  const onlySuccess = successOnlyEl.checked;
+  const frag = document.createDocumentFragment();
+  for (const r of records){
+    if (onlySuccess && r.status !== "ok") continue;
+    const tr = document.createElement("tr");
+    const vals = [
+      r[COLS.name]||"", r[COLS.activity]||"", r[COLS.street]||"",
+      r[COLS.city]||"", r[COLS.zip]||"", r[COLS.countryA3]||"",
+      r.lat ?? "", r.lon ?? "", r.status || ""
+    ];
+    for (const v of vals){ const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); }
+    frag.appendChild(tr);
+  }
+  tbody.innerHTML = ""; tbody.appendChild(frag);
 
-    // Export helpers
-    function toCsv(arr){
-      const headers = [COLS.name, COLS.activity, COLS.street, COLS.city, COLS.zip, COLS.countryA3, "lat", "lon", "status"];
-      const out = [headers.join(",")];
-      for (const r of arr){
-        const vals = [
-          r[COLS.name] || "", r[COLS.activity] || "", r[COLS.street] || "",
-          r[COLS.city] || "", r[COLS.zip] || "", r[COLS.countryA3] || "",
-          r.lat ?? "", r.lon ?? "", r.status || ""
-        ].map(s => {
-          const v = String(s);
-          return /[",\n]/.test(v) ? `"${v.replace(/"/g,'""')}"` : v;
-        });
-        out.push(vals.join(","));
-      }
-      return out.join("\n");
-    }
-    async function copyTable(){
-      const onlySuccess = successOnlyEl.checked;
-      const view = records.filter(r => onlySuccess ? r.status === "ok" : true);
-      await navigator.clipboard.writeText(toCsv(view));
-      copyBtn.textContent = "Copied!"; setTimeout(()=>copyBtn.textContent="Copy table", 1200);
-    }
-    function downloadCsv(){
-      const csv = toCsv(records);
-      const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = "merchantmap-with-geocodes.csv"; a.click();
-      URL.revokeObjectURL(url);
-    }
-    copyBtn.addEventListener("click", copyTable);
-    downloadBtn.addEventListener("click", downloadCsv);
-    successOnlyEl.addEventListener("change", renderTable);
-    concurrencySel.addEventListener("change", () => { /* only affects future runs */ });
+  const ok = records.filter(x=>x.status==="ok").length;
+  const fail = records.filter(x=>x.status!=="ok").length;
+  const shown = tbody.children.length;
+  statusEl.textContent = `Showing ${shown} | Success: ${ok} | Failures: ${fail}`;
+  copyBtn.disabled = shown===0;
+  downloadBtn.disabled = records.length===0;
+}
 
-    // Promise pool for faster geocoding
-    async function withConcurrency(tasks, limit){
-      const results = Array(tasks.length);
-      let i = 0, active = 0;
-      return new Promise(resolve => {
-        const run = () => {
-          while (active < limit && i < tasks.length){
-            const cur = i++;
-            active++;
-            tasks[cur]().then(r => results[cur]=r).catch(e => results[cur]=e).finally(()=>{
-              active--;
-              if (results.length === tasks.length && i === tasks.length && active === 0) resolve(results);
-              else run();
-            });
-          }
-        };
-        run();
+function toCsv(arr){
+  const headers = [COLS.name,COLS.activity,COLS.street,COLS.city,COLS.zip,COLS.countryA3,"lat","lon","status"];
+  const out = [headers.join(",")];
+  for (const r of arr){
+    const vals = [
+      r[COLS.name]||"", r[COLS.activity]||"", r[COLS.street]||"",
+      r[COLS.city]||"", r[COLS.zip]||"", r[COLS.countryA3]||"",
+      r.lat ?? "", r.lon ?? "", r.status || ""
+    ].map(s => { const v = String(s); return /[",\n]/.test(v) ? `"${v.replace(/"/g,'""')}"` : v; });
+    out.push(vals.join(","));
+  }
+  return out.join("\n");
+}
+
+async function copyTable(){
+  const onlySuccess = successOnlyEl.checked;
+  const view = records.filter(r => onlySuccess ? r.status==="ok" : true);
+  await navigator.clipboard.writeText(toCsv(view));
+  copyBtn.textContent = "Copied!"; setTimeout(()=>copyBtn.textContent="Copy table", 1200);
+}
+function downloadCsv(){
+  const csv = toCsv(records);
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = "merchantmap-with-geocodes.csv"; a.click();
+  URL.revokeObjectURL(url);
+}
+copyBtn.addEventListener("click", copyTable);
+downloadBtn.addEventListener("click", downloadCsv);
+successOnlyEl.addEventListener("change", renderTable);
+
+async function withConcurrency(tasks, limit){
+  const results = Array(tasks.length);
+  let i=0, active=0;
+  return new Promise(resolve=>{
+    const run=()=>{ while(active<limit && i<tasks.length){ const cur=i++; active++;
+      tasks[cur]().then(r=>results[cur]=r).catch(e=>results[cur]=e).finally(()=>{
+        active--; (results.length===tasks.length && i===tasks.length && active===0) ? resolve(results) : run();
       });
-    }
+    }}; run();
+  });
+}
 
-    // Geocode (per-row country filter/bias)
-    async function geocodeAddress(address, countryA3){
-      const a2 = alpha3To2(countryA3);
-      const key = `${address.trim().toLowerCase()}|${a2}`;
-      if (!address.trim()) throw new Error("Empty address");
-      if (geocodeCache.has(key)) return geocodeCache.get(key);
+async function geocodeAddress(address, a3){
+  const a2 = alpha3To2(a3);
+  const key = `${address.trim().toLowerCase()}|${a2}`;
+  if (!address.trim()) throw new Error("Empty address");
+  if (geocodeCache.has(key)) return geocodeCache.get(key);
 
-      const url = new URL("https://api.geoapify.com/v1/geocode/search");
-      url.searchParams.set("text", address);
-      url.searchParams.set("apiKey", GEOAPIFY_KEY);
-      if (a2){
-        url.searchParams.set("filter", `countrycode:${a2}`);
-        url.searchParams.set("bias", `countrycode:${a2}`);
+  const url = new URL("https://api.geoapify.com/v1/geocode/search");
+  url.searchParams.set("text", address);
+  url.searchParams.set("apiKey", GEOAPIFY_KEY);
+  if (a2){ url.searchParams.set("filter", `countrycode:${a2}`); url.searchParams.set("bias", `countrycode:${a2}`); }
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Geocode failed: ${res.status} ${res.statusText}`);
+  const data = await res.json();
+  const feature = data.features && data.features[0];
+  if (!feature) throw new Error(`No result for: ${address} (${a3||"no country"})`);
+
+  const [lon, lat] = feature.geometry.coordinates;
+  const result = { lat, lon }; geocodeCache.set(key, result); saveCache(); return result;
+}
+
+// ---- Load + parse CSV (robust) ----
+fetch(CSV_PATH).then(r => {
+  if (!r.ok) throw new Error(`CSV fetch failed: ${r.status} ${r.statusText}`);
+  return r.text();
+}).then(text => {
+  // Show a quick peek to confirm we're reading the right file
+  noticeEl.innerHTML = `<div class="ok">Fetched <code>${CSV_PATH}</code> (${text.length} chars)</div>`;
+
+  Papa.parse(text, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: h => h.trim(), // tolerate stray spaces/BOM
+    complete: ({ data, meta, errors }) => {
+      if (errors && errors.length){
+        noticeEl.innerHTML += `<div class="warn">Parser warnings: ${errors.length}. Check console for details.</div>`;
+        console.warn("PapaParse errors:", errors);
+      }
+      const headers = meta.fields || [];
+      const { ok, missing } = requireHeaders(headers);
+      if (!ok){
+        noticeEl.innerHTML += `<div class="warn">Missing required header(s): <code>${missing.join(", ")}</code>.<br>Found: <code>${headers.join(", ")}</code></div>`;
+        statusEl.textContent = "Stopped (missing headers)";
+        return;
       }
 
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`Geocode failed: ${res.status} ${res.statusText}`);
-      const data = await res.json();
-      const feature = data.features && data.features[0];
-      if (!feature) throw new Error(`No result for: ${address} (${countryA3||"no country"})`);
-
-      const [lon, lat] = feature.geometry.coordinates;
-      const result = { lat, lon, raw: feature };
-      geocodeCache.set(key, result);
-      saveCache();
-      return result;
-    }
-
-    // Load CSV and process
-    fetch(CSV_PATH).then(r => {
-      if (!r.ok) throw new Error(`CSV fetch failed: ${r.status} ${r.statusText}`);
-      return r.text();
-    }).then(text => {
-      // Simple CSV parse (Papa not required here to keep it light) — but you can swap in Papa if your data is messy.
-      // Minimal parser for commas/quotes:
-      function parseCSV(t){
-        // If your CSV may contain complex quoting/commas, use PapaParse from CDN instead.
-        const rows = t.replace(/\r\n/g,"\n").split("\n").filter(Boolean);
-        // Detect headers
-        const hdr = rows.shift().split(",");
-        const records = rows.map(line => {
-          // naive split; replace with PapaParse for complex CSVs
-          const cols = line.split(",");
-          const obj = {};
-          hdr.forEach((h,idx)=>obj[h]=cols[idx]||"");
-          return obj;
-        });
-        return { header: hdr, data: records };
+      if (!data.length){
+        noticeEl.innerHTML += `<div class="warn">No data rows found. Is the CSV empty?</div>`;
+        statusEl.textContent = "Stopped (no rows)";
+        return;
       }
-      const { data: rows } = parseCSV(text);
 
-      // Seed records for table (render immediately)
-      for (const row of rows){
+      // Seed table immediately (before geocoding) so you see rows right away
+      for (const row of data){
         records.push({
           [COLS.name]: row[COLS.name] || "",
           [COLS.activity]: row[COLS.activity] || "",
@@ -270,42 +254,43 @@
       }
       renderTable();
 
-      // Build geocoding tasks
-      const tasks = rows.map((row, idx) => async () => {
+      // Build geocode tasks
+      const tasks = data.map((row, idx) => async () => {
         const addr = buildAddress(row);
         const a3 = (row[COLS.countryA3]||"").trim().toUpperCase();
         if (!addr){ mark(idx, null, null, "no address"); return; }
         try{
           const { lat, lon } = await geocodeAddress(addr, a3);
           mark(idx, lat, lon, "ok");
-        } catch(e){
-          console.warn(e.message);
-          mark(idx, null, null, "fail");
+        }catch(e){
+          console.warn(e.message); mark(idx, null, null, "fail");
         }
       });
 
       const limit = parseInt(concurrencySel.value, 10) || 5;
       statusEl.textContent = `Geocoding ${tasks.length} rows… (concurrency ${limit})`;
-
       withConcurrency(tasks, limit).then(() => {
         renderTable();
         copyBtn.disabled = false; downloadBtn.disabled = false;
-        const ok = records.filter(x=>x.status==="ok").length;
-        const fail = records.length - ok;
-        statusEl.textContent = `Done. Success: ${ok} | Failures: ${fail}`;
+        const okN = records.filter(x=>x.status==="ok").length;
+        const failN = records.length - okN;
+        statusEl.textContent = `Done. Success: ${okN} | Failures: ${failN}`;
       });
-    }).catch(err => {
-      statusEl.textContent = `Error: ${err.message}`;
-    });
-
-    function mark(i, lat, lon, status){
-      const r = records[i]; if (!r) return;
-      if (lat != null) r.lat = lat;
-      if (lon != null) r.lon = lon;
-      r.status = status;
-      // Re-render every ~25 updates to keep UI snappy
-      if (i % 25 === 0) renderTable();
     }
-  </script>
+  });
+}).catch(err => {
+  noticeEl.innerHTML = `<div class="warn">Error fetching <code>${CSV_PATH}</code>: ${esc(err.message)}<br>
+  Make sure the file is in the same folder and that you’re opening this via GitHub Pages (not file://).</div>`;
+  statusEl.textContent = "Stopped (fetch error)";
+});
+
+function mark(i, lat, lon, status){
+  const r = records[i]; if (!r) return;
+  if (lat != null) r.lat = lat;
+  if (lon != null) r.lon = lon;
+  r.status = status;
+  if (i % 25 === 0) renderTable();
+}
+</script>
 </body>
 </html>
