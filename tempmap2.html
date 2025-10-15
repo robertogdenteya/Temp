@@ -1,168 +1,227 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Test Map</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  
-  <!-- Leaflet CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-  <!-- MarkerCluster CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
+  <meta charset="utf-8" />
+  <title>Teya Merchant Map (Leaflet + Geoapify)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <!-- Marker clustering (recommended) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <!-- CSV parser -->
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
   <style>
-    body { margin: 0; font-family: sans-serif; }
-    #map { height: 90vh; width: 100%; }
-    #controls {
-      padding: 10px;
-      background: #f8f8f8;
-      border-bottom: 1px solid #ccc;
+    html, body, #map { height: 100%; margin: 0; }
+    .status {
+      position: absolute; z-index: 500; top: 10px; left: 10px;
+      background: #fff; padding: 8px 10px; border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.15); font: 14px/1.35 system-ui, sans-serif;
+      max-width: 420px;
     }
-    select, input[type="text"] {
-      margin-right: 10px;
-      padding: 5px;
-    }
+    .tt { line-height: 1.2; }  /* tooltip text */
+    .tt strong { display:block; } /* name on its own line */
+    .muted { opacity: .75; }
+    a.small { font-size: 12px; }
   </style>
 </head>
 <body>
+  <div id="map"></div>
+  <div id="status" class="status">
+    <strong>Teya Merchant Map</strong><br>
+    <span class="muted">Loading <code>merchantmap-oct2025.csv</code>…</span>
+  </div>
 
-<div id="controls">
- <!-- <input type="file" id="csv-file" accept=".csv" /> -->
-  <label for="search">Search:</label>
-  <input type="text" id="name-search" placeholder="Search by name...">
+  <script>
+    // ===== CONFIG =====
+    const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa"; // e.g. "994b9182b34b40378d2116c40baa4faa"
+    const CSV_PATH = "merchantmap-oct2025.csv"; // same repo, same folder
 
-  <label for="type-filter">Type:</label>
-  <select id="type-filter">
-    <option value="">All</option>
-  </select>
+    // Map your CSV column names here (edit if your headers differ)
+    const COLS = {
+      name: "MERCHANT_NAME",
+      activity: "BUSINESS_ACTIVITY",
+      street: "address.street",
+      city: "address.city",
+      zip: "address.zip",
+      country: "country" // optional
+    };
 
-  <label for="category-filter">Category:</label>
-  <select id="category-filter">
-    <option value="">All</option>
-  </select>
-</div>
+    // Optional: help geocoder accuracy/speed (e.g. "countrycode:gb,cz,pt")
+    const GEOAPIFY_FILTER = ""; // e.g. "countrycode:gb"
+    const GEOAPIFY_BIAS   = ""; // e.g. "countrycode:gb"
 
-<div id="map"></div>
+    // ===== MAP INIT (Geoapify tiles + attribution) =====
+    const map = L.map('map').setView([51.5074, -0.1278], 6); // start over the UK
+    const isRetina = L.Browser.retina;
+    const tileUrl = isRetina
+      ? `https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}@2x.png?apiKey=${GEOAPIFY_KEY}`
+      : `https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}.png?apiKey=${GEOAPIFY_KEY}`;
 
-<!-- Libraries -->
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    L.tileLayer(tileUrl, {
+      maxZoom: 20,
+      attribution:
+        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, ' +
+        '© <a href="https://www.openmaptiles.org/">OpenMapTiles</a>, ' +
+        '<a href="https://www.geoapify.com/">Powered by Geoapify</a>'
+    }).addTo(map);
 
-<script>
-  let map = L.map('map').setView([54.5, -3], 6); // UK center
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors'
-  }).addTo(map);
+    const cluster = L.markerClusterGroup();
+    map.addLayer(cluster);
 
-  const markerCluster = L.markerClusterGroup();
-  let allData = [];
-  let allMarkers = [];
+    const statusEl = document.getElementById("status");
 
- // Automated map upload - file location must be same as this html file
-  Papa.parse('https://robertogdenteya.github.io/Temp/MapTest3.csv', {
-    download: true,
-   header: true,
-    dynamicTyping: true,
-    skipEmptyLines: true,
-    complete: function (results) {
-      allData = results.data;
-      buildMap(allData);
-      populateFilterOptions(allData);
+    // ===== Helpers =====
+    function esc(s=""){
+      return s.replace(/[&<>"'`=\/]/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','/':'&#x2F;','`':'&#x60;','=':'&#x3D;'}[c])
+      );
     }
-  });
 
-  //manual map upload
-//document.getElementById('csv-file').addEventListener('change', function (e) {
- //   Papa.parse(e.target.files[0], {
- //     header: true,
- //     dynamicTyping: true,
- //      skipEmptyLines: true,
- //     complete: function (results) {
- //      allData = results.data;
- //      buildMap(allData);
- //       populateFilterOptions(allData);
- //     }
- //  });
- // });
+    function buildAddress(row) {
+      const parts = [
+        (row[COLS.street] || "").trim(),
+        (row[COLS.city]   || "").trim(),
+        (row[COLS.zip]    || "").trim(),
+      ].filter(Boolean);
+      const base = parts.join(", ");
+      const country = (row[COLS.country] || "").trim();
+      return country ? `${base}, ${country}` : base;
+    }
 
-  function buildMap(data) {
-    markerCluster.clearLayers();
-    allMarkers = [];
+    function tooltipHtml(row, fullAddr) {
+      const name = esc(row[COLS.name] || "(Unnamed)");
+      const act  = esc(row[COLS.activity] || "—");
+      const addr = esc(fullAddr || "—");
+      return `<div class="tt"><strong>${name}</strong>${act}<br>${addr}</div>`;
+    }
 
-    data.forEach(row => {
-      const lat = parseFloat(row.Latitude);
-      const lon = parseFloat(row.Longitude);
-      const name = row.Name;
-      const type = row.Type;
-      const category = row.Category;
-      const postcode = row.Postcode;
-      if (!isNaN(lat) && !isNaN(lon)) {
-       const customIcon = L.icon({
-  iconUrl: 'https://robertogdenteya.github.io/Temp/teya-icon.png', // update path if needed
-  iconSize: [32, 32], // size of the icon
-  iconAnchor: [16, 32], // point of the icon which will correspond to marker's location
-  popupAnchor: [0, -32] // point from which the popup should open relative to the iconAnchor
-});
+    // Cache (localStorage) to avoid re-geocoding same addresses
+    const geocodeCache = new Map();
+    loadCache();
+    function loadCache(){
+      try{
+        const raw = localStorage.getItem("geocodeCache");
+        if (!raw) return;
+        const obj = JSON.parse(raw);
+        for (const [k,v] of Object.entries(obj)) geocodeCache.set(k, v);
+      } catch {}
+    }
+    function saveCache(){
+      localStorage.setItem("geocodeCache", JSON.stringify(Object.fromEntries(geocodeCache)));
+    }
 
-const marker = L.marker([lat, lon], { icon: customIcon }).bindPopup(
-  `<strong>${name}</strong><br>${type}<br>${category}<br>${postcode}`
-);
-        
-       
-        marker.type = type;
-        marker.category = category;
-        marker.name = name;
-        allMarkers.push(marker);
+    // Rate-limited queue (keep gentle to avoid 429s)
+    const queue = [];
+    let running = false;
+    const RPS = 5;
+    const INTERVAL_MS = Math.ceil(1000 / RPS);
+    function enqueue(fn){ queue.push(fn); if (!running) runQueue(); }
+    async function runQueue(){
+      running = true;
+      while(queue.length){
+        await queue.shift()();
+        await new Promise(r => setTimeout(r, INTERVAL_MS));
       }
-    });
+      running = false;
+    }
 
-    allMarkers.forEach(m => markerCluster.addLayer(m));
-    map.addLayer(markerCluster);
-  }
+    async function geocodeAddress(address){
+      const key = address.trim().toLowerCase();
+      if (!key) throw new Error("Empty address");
+      if (geocodeCache.has(key)) return geocodeCache.get(key);
 
-  function populateFilterOptions(data) {
-    const typeSelect = document.getElementById('type-filter');
-    const categorySelect = document.getElementById('category-filter');
+      const url = new URL("https://api.geoapify.com/v1/geocode/search");
+      url.searchParams.set("text", address);
+      url.searchParams.set("apiKey", GEOAPIFY_KEY);
+      if (GEOAPIFY_FILTER) url.searchParams.set("filter", GEOAPIFY_FILTER);
+      if (GEOAPIFY_BIAS)   url.searchParams.set("bias", GEOAPIFY_BIAS);
 
-    const uniqueTypes = Array.from(new Set(data.map(row => row.Type))).sort();
-    const uniqueCategories = Array.from(new Set(data.map(row => row.Category))).sort();
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Geocode failed: ${res.status} ${res.statusText}`);
+      const data = await res.json();
+      const feature = data.features && data.features[0];
+      if (!feature) throw new Error(`No result for: ${address}`);
 
-    uniqueTypes.forEach(type => {
-      const opt = document.createElement('option');
-      opt.value = type;
-      opt.textContent = type;
-      typeSelect.appendChild(opt);
-    });
+      const [lon, lat] = feature.geometry.coordinates;
+      const result = { lat, lon, raw: feature };
+      geocodeCache.set(key, result);
+      saveCache();
+      return result;
+    }
 
-    uniqueCategories.forEach(category => {
-      const opt = document.createElement('option');
-      opt.value = category;
-      opt.textContent = category;
-      categorySelect.appendChild(opt);
-    });
+    // ===== Load CSV from the repo (via relative path) =====
+    // This works cleanly on GitHub Pages (no CORS issues) because both files are served from the same origin.
+    fetch(CSV_PATH)
+      .then(r => {
+        if (!r.ok) throw new Error(`CSV fetch failed: ${r.status} ${r.statusText}`);
+        return r.text();
+      })
+      .then(text => {
+        statusEl.innerHTML = `Parsing <code>${CSV_PATH}</code>…`;
+        Papa.parse(text, {
+          header: true,
+          skipEmptyLines: true,
+          complete: ({ data: rows }) => plotRows(rows),
+          error: (err) => statusEl.innerHTML = `CSV parse error: ${esc(err.message)}`
+        });
+      })
+      .catch(err => {
+        statusEl.innerHTML = `Error loading <code>${CSV_PATH}</code>: ${esc(err.message)}<br>
+          <span class="muted">Ensure the CSV is in the repo root next to <code>tempmap2.html</code>.</span>`;
+      });
 
-    typeSelect.addEventListener('change', applyFilters);
-    categorySelect.addEventListener('change', applyFilters);
-    document.getElementById('name-search').addEventListener('input', applyFilters);
-  }
+    function plotRows(rows){
+      if (!rows.length){
+        statusEl.textContent = "No rows found in CSV.";
+        return;
+      }
+      let processed = 0, failures = 0;
+      const bounds = L.latLngBounds([]);
 
-  function applyFilters() {
-    const selectedType = document.getElementById('type-filter').value;
-    const selectedCategory = document.getElementById('category-filter').value;
-    const searchTerm = document.getElementById('name-search').value.trim().toLowerCase();
+      new Promise(resolve => {
+        rows.forEach(row => {
+          const fullAddr = buildAddress(row);
+          if (!fullAddr){ failures++; tick(); return; }
 
-    const filtered = allData.filter(row => {
-      const matchType = selectedType ? row.Type === selectedType : true;
-      const matchCategory = selectedCategory ? row.Category === selectedCategory : true;
-      const matchSearch = searchTerm ? String(row.Name || '').toLowerCase().includes(searchTerm) : true;
-      return matchType && matchCategory && matchSearch;
-    });
+          enqueue(async () => {
+            try{
+              const { lat, lon } = await geocodeAddress(fullAddr);
+              const marker = L.marker([lat, lon]);
 
-    buildMap(filtered);
-  }
-</script>
+              // Hover tooltip (and popup for mobile)
+              marker.bindTooltip(tooltipHtml(row, fullAddr), { direction: "top", opacity: 0.9 });
+              marker.bindPopup(tooltipHtml(row, fullAddr));
 
+              cluster.addLayer(marker);
+              bounds.extend([lat, lon]);
+            } catch(e){
+              console.warn(e.message);
+              failures++;
+            } finally {
+              tick();
+            }
+          });
+        });
+
+        function tick(){
+          processed++;
+          statusEl.innerHTML = `Geocoded ${processed}/${rows.length} (failures: ${failures})…`;
+          if (processed === rows.length){
+            if (bounds.isValid()) map.fitBounds(bounds.pad(0.15));
+            statusEl.innerHTML = `Done. Plotted ${rows.length - failures} / ${rows.length}. ` +
+              `<a class="small" href="${location.href}" title="Reload">Reload</a>`;
+            resolve();
+          }
+        }
+      });
+    }
+  </script>
 </body>
 </html>
