@@ -55,23 +55,28 @@
 </div>
 
 <script>
-const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa";  // ← your key
+/* ===================== CONFIG ===================== */
+const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa";  // your key
 const CSV_PATH = "merchantmap-oct2025.csv";
 
-// --- START FROM THIS ID (inclusive) ---
-const START_ID = 65800;   // set to null to disable
-// Or, if you prefer to start by row index instead of ID: set START_INDEX (0-based), else leave null
-const START_INDEX = null; // e.g., 65800 to start from the 65,801st row  
+/* Start controls:
+   - To start by ID, set START_ID to a number (e.g., 65800) and leave START_INDEX = null.
+   - To start by row position, set START_INDEX (0-based) and set START_ID = null.
+*/
+const START_ID = 65800;     // inclusive; set to null to disable ID-based start
+const START_INDEX = null;   // 0-based row index; set to a number to start by row; leave null to ignore
 
+/* ===================== COLUMNS ===================== */
 const COLS = {
   id: "ID",
   name: "MERCHANT_NAME",
   street: "address.street",
-  city: "address.CITY",
+  city: "address.CITY",   // note: CITY and ZIP are upper-case in your CSV
   zip: "address.ZIP",
   countryA3: "MERCHANT_COUNTRY"
 };
 
+/* A3 -> A2 country map for Geoapify filter/bias */
 const A3_TO_A2 = {
   GBR:"gb", HRV:"hr", PRT:"pt", CZE:"cz", HUN:"hu", SVK:"sk", ISL:"is",
   IRL:"ie", FRA:"fr", DEU:"de", ESP:"es", ITA:"it", NLD:"nl", BEL:"be",
@@ -79,86 +84,207 @@ const A3_TO_A2 = {
   NOR:"no", CHE:"ch", USA:"us", CAN:"ca", AUS:"au", NZL:"nz"
 };
 
-const tbody=document.querySelector("#dataTable tbody");
-const copyBtn=document.getElementById("copyBtn");
-const downloadBtn=document.getElementById("downloadBtn");
-const statusEl=document.getElementById("status");
-const concurrencySel=document.getElementById("concurrency");
-const records=[];
-const geocodeCache=new Map();
-function loadCache(){try{const raw=localStorage.getItem("geo_cache_minimal");if(raw)Object.entries(JSON.parse(raw)).forEach(([k,v])=>geocodeCache.set(k,v));}catch{}}
-function saveCache(){localStorage.setItem("geo_cache_minimal",JSON.stringify(Object.fromEntries(geocodeCache)));}
+/* ===================== STATE ===================== */
+const tbody = document.querySelector("#dataTable tbody");
+const copyBtn = document.getElementById("copyBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const statusEl = document.getElementById("status");
+const concurrencySel = document.getElementById("concurrency");
+
+const records = [];
+const geocodeCache = new Map();
+
+/* Cache load/save */
+function loadCache() {
+  try {
+    const raw = localStorage.getItem("geo_cache_minimal");
+    if (raw) Object.entries(JSON.parse(raw)).forEach(([k, v]) => geocodeCache.set(k, v));
+  } catch {}
+}
+function saveCache() {
+  try {
+    localStorage.setItem("geo_cache_minimal", JSON.stringify(Object.fromEntries(geocodeCache)));
+  } catch {}
+}
 loadCache();
 
-function buildAddress(r){const parts=[(r[COLS.street]||"").trim(),(r[COLS.city]||"").trim(),(r[COLS.zip]||"").trim()].filter(Boolean);return parts.join(", ");}
-function alpha3To2(a3){return A3_TO_A2[String(a3||"").trim().toUpperCase()]||"";}
-function renderTable(){const frag=document.createDocumentFragment();for(const r of records){const tr=document.createElement("tr");[r[COLS.id],r[COLS.name],r.lon??"",r.lat??""].forEach(v=>{const td=document.createElement("td");td.textContent=v||"";tr.appendChild(td);});frag.appendChild(tr);}tbody.innerHTML="";tbody.appendChild(frag);const ok=records.filter(x=>x.lat&&x.lon).length;statusEl.textContent=`Geocoded ${ok}/${records.length}`;copyBtn.disabled=records.length===0;downloadBtn.disabled=records.length===0;}
-function toCsv(){const lines=["ID,MERCHANT_NAME,Longitude,Latitude"];for(const r of records){const vals=[r[COLS.id]||"",r[COLS.name]||"",r.lon??"",r.lat??""].map(v=>`"${String(v).replace(/"/g,'""')}"`);lines.push(vals.join(","));}return lines.join("\n");}
-copyBtn.onclick=async()=>{await navigator.clipboard.writeText(toCsv());copyBtn.textContent="Copied!";setTimeout(()=>copyBtn.textContent="Copy table",1200);};
-downloadBtn.onclick=()=>{const blob=new Blob([toCsv()],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="merchant-coordinates.csv";a.click();URL.revokeObjectURL(url);};
-
-async function withConcurrency(tasks,limit){const results=Array(tasks.length);let i=0,active=0;return new Promise(resolve=>{const run=()=>{while(active<limit&&i<tasks.length){const cur=i++;active++;tasks[cur]().then(r=>results[cur]=r).catch(e=>results[cur]=e).finally(()=>{active--;if(i===tasks.length&&active===0)resolve(results);else run();});}};run();});}
-
-async function geocode(addr,a3){const a2=alpha3To2(a3);const key=`${addr.toLowerCase()}|${a2}`;if(geocodeCache.has(key))return geocodeCache.get(key);const url=new URL("https://api.geoapify.com/v1/geocode/search");url.searchParams.set("text",addr);url.searchParams.set("apiKey",GEOAPIFY_KEY);if(a2){url.searchParams.set("filter",`countrycode:${a2}`);url.searchParams.set("bias",`countrycode:${a2}`);}const res=await fetch(url);if(!res.ok)throw new Error(`Geo fail ${res.status}`);const data=await res.json();const f=data.features?.[0];if(!f)throw new Error("no result");const[lon,lat]=f.geometry.coordinates;const out={lat,lon};geocodeCache.set(key,out);saveCache();return out;}
-
-fetch(CSV_PATH)
-  .then(r=>{if(!r.ok)throw new Error(`CSV fetch failed: ${r.status}`);return r.text();})
-  .then(text=>{
-    Papa.parse(text,{header:true,skipEmptyLines:true,complete:({data})=>{
-      for(const row of data){records.push({[COLS.id]:row[COLS.id]||"",[COLS.name]:row[COLS.name]||"",[COLS.street]:row[COLS.street]||"",[COLS.city]:row[COLS.city]||"",[COLS.zip]:row[COLS.zip]||"",[COLS.countryA3]:row[COLS.countryA3]||"",lat:"",lon:""});}
-      renderTable();
-     // const tasks=records.map((r,idx)=>async()=>{const addr=buildAddress(r);const c=(r[COLS.countryA3]||"").trim().toUpperCase();if(!addr){r.status="no address";return;}try{const{lat,lon}=await geocode(addr,c);r.lat=lat;r.lon=lon;r.status="ok";}catch{r.status="fail";}if(idx%25===0)renderTable();});
-   //   const limit=parseInt(concurrencySel.value,10)||5;
-    //  statusEl.textContent=`Geocoding ${records.length} merchants (x${limit})…`;
-  //    withConcurrency(tasks,limit).then(()=>{renderTable();statusEl.textContent=`Done: ${records.filter(x=>x.lat&&x.lon).length}/${records.length} geocoded`;});
-//    }});
-// Decide where to start (by index if provided, otherwise by ID)
-let startAt = 0;
-if (Number.isInteger(START_INDEX)) {
-  startAt = Math.max(0, Math.min(records.length, START_INDEX));
-} else if (Number.isInteger(START_ID)) {
-  const findIdx = records.findIndex(r => {
-    const n = parseInt(r[COLS.id], 10);
-    return Number.isFinite(n) && n >= START_ID;
-  });
-  startAt = (findIdx === -1) ? records.length : findIdx;
+/* Helpers */
+function buildAddress(r) {
+  const parts = [
+    (r[COLS.street] || "").trim(),
+    (r[COLS.city] || "").trim(),
+    (r[COLS.zip] || "").trim()
+  ].filter(Boolean);
+  return parts.join(", ");
+}
+function alpha3To2(a3) {
+  return A3_TO_A2[String(a3 || "").trim().toUpperCase()] || "";
 }
 
-// Build tasks only for the slice we want to process
-const tasks = records.slice(startAt).map((r, idxInSlice) => async () => {
-  const addr = buildAddress(r);
-  const c = (r[COLS.countryA3] || "").trim().toUpperCase();
-  if (!addr) {
-    r.status = "no address";
-    return;
+/* Render & CSV */
+function renderTable() {
+  const frag = document.createDocumentFragment();
+  for (const r of records) {
+    const tr = document.createElement("tr");
+    [r[COLS.id], r[COLS.name], r.lon ?? "", r.lat ?? ""].forEach(v => {
+      const td = document.createElement("td");
+      td.textContent = v || "";
+      tr.appendChild(td);
+    });
+    frag.appendChild(tr);
   }
-  try {
-    const { lat, lon } = await geocode(addr, c);
-    r.lat = lat;
-    r.lon = lon;
-    r.status = "ok";
-  } catch {
-    r.status = "fail";
+  tbody.innerHTML = "";
+  tbody.appendChild(frag);
+  const ok = records.filter(x => x.lat && x.lon).length;
+  statusEl.textContent = `Geocoded ${ok}/${records.length}`;
+  copyBtn.disabled = records.length === 0;
+  downloadBtn.disabled = records.length === 0;
+}
+function toCsv() {
+  const lines = ["ID,MERCHANT_NAME,Longitude,Latitude"];
+  for (const r of records) {
+    const vals = [
+      r[COLS.id] || "",
+      r[COLS.name] || "",
+      r.lon ?? "",
+      r.lat ?? ""
+    ].map(v => `"${String(v).replace(/"/g,'""')}"`);
+    lines.push(vals.join(","));
   }
-  // Throttle table updates (use original index for smoother paint)
-  const origIdx = startAt + idxInSlice;
-  if (origIdx % 25 === 0) renderTable();
-});
+  return lines.join("\n");
+}
 
-const limit = parseInt(concurrencySel.value, 10) || 5;
-const totalToProcess = tasks.length;
-statusEl.textContent = (totalToProcess > 0)
-  ? `Geocoding ${totalToProcess} of ${records.length} merchants (starting ${START_INDEX!=null ? "at row "+START_INDEX : "from ID ≥ "+START_ID}) (x${limit})…`
-  : `Nothing to geocode: start point is beyond the dataset.`;
+/* Buttons */
+copyBtn.onclick = async () => {
+  await navigator.clipboard.writeText(toCsv());
+  copyBtn.textContent = "Copied!";
+  setTimeout(() => (copyBtn.textContent = "Copy table"), 1200);
+};
+downloadBtn.onclick = () => {
+  const blob = new Blob([toCsv()], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "merchant-coordinates.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+};
 
-// Run with concurrency
-withConcurrency(tasks, limit).then(() => {
-  renderTable();
-  statusEl.textContent = `Done: ${records.filter(x => x.lat && x.lon).length}/${records.length} geocoded`;
-});
-      
+/* Concurrency runner */
+async function withConcurrency(tasks, limit) {
+  const results = Array(tasks.length);
+  let i = 0, active = 0;
+  return new Promise(resolve => {
+    const run = () => {
+      while (active < limit && i < tasks.length) {
+        const cur = i++;
+        active++;
+        tasks[cur]()
+          .then(r => results[cur] = r)
+          .catch(e => results[cur] = e)
+          .finally(() => {
+            active--;
+            if (i === tasks.length && active === 0) resolve(results);
+            else run();
+          });
+      }
+    };
+    run();
+  });
+}
+
+/* Geoapify call */
+async function geocode(addr, a3) {
+  const a2 = alpha3To2(a3);
+  const key = `${addr.toLowerCase()}|${a2}`;
+  if (geocodeCache.has(key)) return geocodeCache.get(key);
+
+  const url = new URL("https://api.geoapify.com/v1/geocode/search");
+  url.searchParams.set("text", addr);
+  url.searchParams.set("apiKey", GEOAPIFY_KEY);
+  if (a2) {
+    url.searchParams.set("filter", `countrycode:${a2}`);
+    url.searchParams.set("bias", `countrycode:${a2}`);
+  }
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Geo fail ${res.status}`);
+  const data = await res.json();
+  const f = data.features?.[0];
+  if (!f) throw new Error("no result");
+
+  const [lon, lat] = f.geometry.coordinates;
+  const out = { lat, lon };
+  geocodeCache.set(key, out);
+  saveCache();
+  return out;
+}
+
+/* ===================== LOAD + PROCESS ===================== */
+fetch(CSV_PATH)
+  .then(r => { if (!r.ok) throw new Error(`CSV fetch failed: ${r.status}`); return r.text(); })
+  .then(text => {
+    Papa.parse(text, {
+      header: true,
+      skipEmptyLines: true,
+      complete: ({ data }) => {
+        for (const row of data) {
+          records.push({
+            [COLS.id]: row[COLS.id] || "",
+            [COLS.name]: row[COLS.name] || "",
+            [COLS.street]: row[COLS.street] || "",
+            [COLS.city]: row[COLS.city] || "",
+            [COLS.zip]: row[COLS.zip] || "",
+            [COLS.countryA3]: row[COLS.countryA3] || "",
+            lat: "",
+            lon: ""
+          });
+        }
+        renderTable();
+
+        /* Determine start point */
+        let startAt = 0;
+        if (Number.isInteger(START_INDEX)) {
+          startAt = Math.max(0, Math.min(records.length, START_INDEX));
+        } else if (Number.isInteger(START_ID)) {
+          const findIdx = records.findIndex(r => {
+            const n = parseInt(r[COLS.id], 10);
+            return Number.isFinite(n) && n >= START_ID;
+          });
+          startAt = (findIdx === -1) ? records.length : findIdx;
+        }
+
+        /* Build tasks only for the slice we want to process */
+        const tasks = records.slice(startAt).map((r, idxInSlice) => async () => {
+          const addr = buildAddress(r);
+          const c = (r[COLS.countryA3] || "").trim().toUpperCase();
+          if (!addr) { r.status = "no address"; return; }
+          try {
+            const { lat, lon } = await geocode(addr, c);
+            r.lat = lat; r.lon = lon; r.status = "ok";
+          } catch {
+            r.status = "fail";
+          }
+          // Throttle UI refresh a bit using original index
+          const origIdx = startAt + idxInSlice;
+          if (origIdx % 25 === 0) renderTable();
+        });
+
+        const limit = parseInt(concurrencySel.value, 10) || 5;
+        const totalToProcess = tasks.length;
+
+        statusEl.textContent = (totalToProcess > 0)
+          ? `Geocoding ${totalToProcess} of ${records.length} merchants (${START_INDEX!=null ? "starting at row " + START_INDEX : "from ID ≥ " + START_ID}) (x${limit})…`
+          : `Nothing to geocode: start point is beyond the dataset.`;
+
+        withConcurrency(tasks, limit).then(() => {
+          renderTable();
+          statusEl.textContent = `Done: ${records.filter(x => x.lat && x.lon).length}/${records.length} geocoded`;
+        });
+      }
+    });
   })
-  .catch(e=>{statusEl.textContent=`Error: ${e.message}`;});
+  .catch(e => { statusEl.textContent = `Error: ${e.message}`; });
 </script>
 </body>
 </html>
