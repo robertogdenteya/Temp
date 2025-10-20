@@ -58,6 +58,11 @@
 const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa";  // ← your key
 const CSV_PATH = "merchantmap-oct2025.csv";
 
+// --- START FROM THIS ID (inclusive) ---
+const START_ID = 65800;   // set to null to disable
+// Or, if you prefer to start by row index instead of ID: set START_INDEX (0-based), else leave null
+const START_INDEX = null; // e.g., 65800 to start from the 65,801st row  
+
 const COLS = {
   id: "ID",
   name: "MERCHANT_NAME",
@@ -102,11 +107,56 @@ fetch(CSV_PATH)
     Papa.parse(text,{header:true,skipEmptyLines:true,complete:({data})=>{
       for(const row of data){records.push({[COLS.id]:row[COLS.id]||"",[COLS.name]:row[COLS.name]||"",[COLS.street]:row[COLS.street]||"",[COLS.city]:row[COLS.city]||"",[COLS.zip]:row[COLS.zip]||"",[COLS.countryA3]:row[COLS.countryA3]||"",lat:"",lon:""});}
       renderTable();
-      const tasks=records.map((r,idx)=>async()=>{const addr=buildAddress(r);const c=(r[COLS.countryA3]||"").trim().toUpperCase();if(!addr){r.status="no address";return;}try{const{lat,lon}=await geocode(addr,c);r.lat=lat;r.lon=lon;r.status="ok";}catch{r.status="fail";}if(idx%25===0)renderTable();});
-      const limit=parseInt(concurrencySel.value,10)||5;
-      statusEl.textContent=`Geocoding ${records.length} merchants (x${limit})…`;
-      withConcurrency(tasks,limit).then(()=>{renderTable();statusEl.textContent=`Done: ${records.filter(x=>x.lat&&x.lon).length}/${records.length} geocoded`;});
-    }});
+     // const tasks=records.map((r,idx)=>async()=>{const addr=buildAddress(r);const c=(r[COLS.countryA3]||"").trim().toUpperCase();if(!addr){r.status="no address";return;}try{const{lat,lon}=await geocode(addr,c);r.lat=lat;r.lon=lon;r.status="ok";}catch{r.status="fail";}if(idx%25===0)renderTable();});
+   //   const limit=parseInt(concurrencySel.value,10)||5;
+    //  statusEl.textContent=`Geocoding ${records.length} merchants (x${limit})…`;
+  //    withConcurrency(tasks,limit).then(()=>{renderTable();statusEl.textContent=`Done: ${records.filter(x=>x.lat&&x.lon).length}/${records.length} geocoded`;});
+//    }});
+// Decide where to start (by index if provided, otherwise by ID)
+let startAt = 0;
+if (Number.isInteger(START_INDEX)) {
+  startAt = Math.max(0, Math.min(records.length, START_INDEX));
+} else if (Number.isInteger(START_ID)) {
+  const findIdx = records.findIndex(r => {
+    const n = parseInt(r[COLS.id], 10);
+    return Number.isFinite(n) && n >= START_ID;
+  });
+  startAt = (findIdx === -1) ? records.length : findIdx;
+}
+
+// Build tasks only for the slice we want to process
+const tasks = records.slice(startAt).map((r, idxInSlice) => async () => {
+  const addr = buildAddress(r);
+  const c = (r[COLS.countryA3] || "").trim().toUpperCase();
+  if (!addr) {
+    r.status = "no address";
+    return;
+  }
+  try {
+    const { lat, lon } = await geocode(addr, c);
+    r.lat = lat;
+    r.lon = lon;
+    r.status = "ok";
+  } catch {
+    r.status = "fail";
+  }
+  // Throttle table updates (use original index for smoother paint)
+  const origIdx = startAt + idxInSlice;
+  if (origIdx % 25 === 0) renderTable();
+});
+
+const limit = parseInt(concurrencySel.value, 10) || 5;
+const totalToProcess = tasks.length;
+statusEl.textContent = (totalToProcess > 0)
+  ? `Geocoding ${totalToProcess} of ${records.length} merchants (starting ${START_INDEX!=null ? "at row "+START_INDEX : "from ID ≥ "+START_ID}) (x${limit})…`
+  : `Nothing to geocode: start point is beyond the dataset.`;
+
+// Run with concurrency
+withConcurrency(tasks, limit).then(() => {
+  renderTable();
+  statusEl.textContent = `Done: ${records.filter(x => x.lat && x.lon).length}/${records.length} geocoded`;
+});
+      
   })
   .catch(e=>{statusEl.textContent=`Error: ${e.message}`;});
 </script>
