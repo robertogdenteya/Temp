@@ -9,13 +9,11 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-  <!-- Clusters (optional) -->
+  <!-- Heatmap + Clusters -->
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-
-  <!-- Heatmap -->
-  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 
   <!-- Papa Parse -->
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
@@ -26,30 +24,20 @@
     body { font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
     #map { position:absolute; inset:0; }
     .panel {
-      position: absolute; left: 12px; top: 12px;
+      position:absolute; left:12px; top:12px; z-index:500;
       background:#fff; border:1px solid #ddd; border-radius:10px;
       padding:10px 12px; box-shadow:0 6px 20px rgba(0,0,0,.08);
-      display:flex; flex-direction:column; gap:10px; min-width: 340px; z-index:500;
+      display:flex; flex-direction:column; gap:10px; min-width:340px;
     }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .count { margin-left:auto; font-variant-numeric:tabular-nums; font-weight:600; }
-    .slider { width:100%; display:grid; grid-template-columns: 1fr 72px; align-items:center; gap:8px; }
-    input[type=range] { width:100%; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .legend {
-      position:absolute; right:12px; bottom:12px;
-      background:#fff; border:1px solid #ddd; border-radius:10px;
-      padding:8px 10px; font-size:12px; box-shadow:0 6px 20px rgba(0,0,0,.08); z-index:500;
-    }
-    .badge { display:inline-block; padding:2px 6px; border-radius:999px; font-size:11px; }
-    .b-blue { background:var(--blue); color:#fff; }
-    .b-lime { background:var(--lime); }
-    button, select { padding:6px 10px; border:1px solid #ccc; border-radius:8px; background:#fff; cursor:pointer; }
-    button:disabled { opacity:.6; cursor:not-allowed; }
-    .note { color:#666; font-size:12px; }
-    .warn { color:#b00020; font-weight:600; }
-    .ok { color:#0a7f2e; font-weight:600; }
-    .small { font-size:11px; color:#555; }
+    .slider { width:100%; display:grid; grid-template-columns:1fr 72px; gap:8px; align-items:center; }
+    input[type=range]{ width:100%; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    button, select{ padding:6px 10px; border:1px solid #ccc; border-radius:8px; background:#fff; cursor:pointer; }
+    button:disabled{ opacity:.6; cursor:not-allowed; }
+    .note{ color:#666; font-size:12px; }
+    .warn{ color:#b00020; font-weight:600; }
   </style>
 </head>
 <body>
@@ -63,11 +51,11 @@
 
     <div class="row">
       <button id="playBtn">▶ Play</button>
-      <select id="modeSel" title="Visualisation mode">
+      <select id="modeSel">
         <option value="heat" selected>Heatmap (fast)</option>
         <option value="cluster">Marker clusters</option>
       </select>
-      <button id="fitBtn" title="Fit to data">Fit</button>
+      <button id="fitBtn">Fit</button>
     </div>
 
     <div class="slider">
@@ -82,298 +70,150 @@
       CSV: <span class="mono" id="csvName">merchantmapoct25-dates.csv</span>
       <span id="status" class="count">Loading…</span>
     </div>
-    <div class="note small" id="debugNote"></div>
-  </div>
-
-  <div class="legend">
-    <div><span class="badge b-blue">Blue</span> = cumulative to selected month</div>
-    <div><span class="badge b-lime">Lime</span> = intensity accent</div>
+    <div class="note" id="debugNote"></div>
   </div>
 
 <script>
-/** CONFIG **/
-const CSV_PATH = "merchantmapoct25-dates.csv";
+/* === CONFIG (uses your exact headers) === */
+const CSV_PATH = "merchantmapoct25-dates.csv?v=1"; // cache-bust
+const COLS = {
+  name: "MERCHANT_NAME",
+  activity: "BUSINESS_ACTIVITY",
+  date: "START_OF_MERCHANT_REPORTING",
+  lat: "Latitude",
+  lon: "Longitude"
+};
 
-/** Map **/
+/* === MAP === */
 const map = L.map('map', { preferCanvas:true }).setView([51.5, -0.1], 5);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 18, attribution: '&copy; OpenStreetMap'
-}).addTo(map);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(map);
 
-/** UI refs **/
 const statusEl = document.getElementById('status');
-const debugNote = document.getElementById('debugNote');
-const csvNameEl = document.getElementById('csvName');
-const totalCountEl = document.getElementById('totalCount');
-const monthSlider = document.getElementById('monthSlider');
-const monthLabel = document.getElementById('monthLabel');
-const rangeLabel = document.getElementById('rangeLabel');
-const playBtn = document.getElementById('playBtn');
-const modeSel = document.getElementById('modeSel');
-const fitBtn = document.getElementById('fitBtn');
+const debugEl  = document.getElementById('debugNote');
+const totalEl  = document.getElementById('totalCount');
+const slider   = document.getElementById('monthSlider');
+const monthLab = document.getElementById('monthLabel');
+const rangeLab = document.getElementById('rangeLabel');
+const playBtn  = document.getElementById('playBtn');
+const modeSel  = document.getElementById('modeSel');
+const fitBtn   = document.getElementById('fitBtn');
 
-csvNameEl.textContent = CSV_PATH;
+let points = [];     // [{lat,lon,date,ym,name,activity}]
+let months = [];     // ['YYYY-MM', ...]
+let monthEnd = {};   // map ym -> cumulative end index
+let heatLayer = null, clusterLayer = null, playTimer = null;
 
-let pointsSorted = [];     // [{lat,lon,date,ym,name,activity}]
-let months = [];
-let monthToEndIndex = {};
-let heatLayer = null;
-let clusterLayer = null;
-let playTimer = null;
-
-/** Helpers **/
-const fmtYM = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-function parseDateLoose(s) {
-  if (!s) return null;
-  // Try native first
-  const d1 = new Date(s);
-  if (!isNaN(d1)) return d1;
-  // Try dd/mm/yyyy or mm/dd/yyyy or yyyy-mm-dd
-  const m = String(s).trim().match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
-  if (m){
-    let d = +m[1], mo = +m[2], y = +m[3]; if (y<100) y += 2000;
-    // Heuristic: assume UK dd/mm; if month > 12 and day <=12, swap
-    if (mo>12 && d<=12) { const t = mo; mo = d; d = t; }
-    const dt = new Date(y, mo-1, d);
-    if (!isNaN(dt)) return dt;
-  }
-  return null;
+/* === Helpers === */
+const fmtYM = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+function parseUK(s){
+  // dd/mm/yyyy
+  const m = String(s||"").match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) return new Date(+m[3], +m[2]-1, +m[1]);
+  const d = new Date(s); // fallback
+  return isNaN(d) ? null : d;
 }
-function computeMonths(sortedDates) {
-  if (!sortedDates.length) return [];
-  const start = new Date(sortedDates[0].getFullYear(), sortedDates[0].getMonth(), 1);
-  const end = new Date();
-  const arr = [];
-  let cur = new Date(start);
-  while (cur <= end) { arr.push(fmtYM(cur)); cur.setMonth(cur.getMonth()+1); }
-  return arr;
+function updateLabels(idx){
+  const ym = months[idx] || "—";
+  monthLab.textContent = ym;
+  if (months.length) rangeLab.textContent = `${months[0]} → ${months[months.length-1]}`;
 }
-function updateLabels(idx) {
-  const ym = months[idx] || '—';
-  monthLabel.textContent = ym;
-  if (months.length) rangeLabel.textContent = `${months[0]} → ${months[months.length-1]}`;
-}
-
-/** Layers **/
-function ensureHeatLayer() {
+function ensureHeat(){
   if (!heatLayer) heatLayer = L.heatLayer([], { radius:18, blur:15, maxZoom:12 });
   if (!map.hasLayer(heatLayer)) map.addLayer(heatLayer);
   if (clusterLayer && map.hasLayer(clusterLayer)) map.removeLayer(clusterLayer);
 }
-function ensureClusterLayer() {
+function ensureClusters(){
   if (!clusterLayer) clusterLayer = L.markerClusterGroup({ chunkedLoading:true });
   else clusterLayer.clearLayers();
   if (!map.hasLayer(clusterLayer)) map.addLayer(clusterLayer);
   if (heatLayer && map.hasLayer(heatLayer)) map.removeLayer(heatLayer);
 }
+function setView(idx){
+  const ym = months[idx], end = monthEnd[ym] ?? -1;
+  if (end < 0){ if (heatLayer) heatLayer.setLatLngs([]); if (clusterLayer) clusterLayer.clearLayers(); totalEl.textContent = "0"; return; }
+  const cum = points.slice(0, end+1);
+  totalEl.textContent = cum.length.toLocaleString();
 
-/** Draw cumulative up to slider index **/
-function setViewForIndex(idx) {
-  const ym = months[idx];
-  const endIndex = monthToEndIndex[ym] ?? -1;
-  if (endIndex < 0) {
-    if (heatLayer) heatLayer.setLatLngs([]);
-    if (clusterLayer) clusterLayer.clearLayers();
-    totalCountEl.textContent = "0";
-    return;
-  }
-  const cumulative = pointsSorted.slice(0, endIndex + 1);
-  totalCountEl.textContent = cumulative.length.toLocaleString();
-
-  if (map.hasLayer(heatLayer)) {
-    const lastIdx = endIndex;
-    const heatPts = cumulative.map((p,i) => [p.lat, p.lon, 0.6 + 0.4 * (i/Math.max(1,lastIdx))]);
-    heatLayer.setLatLngs(heatPts);
-  } else if (map.hasLayer(clusterLayer)) {
+  if (map.hasLayer(heatLayer)){
+    const last = end;
+    heatLayer.setLatLngs(cum.map((p,i)=>[p.lat, p.lon, 0.6 + 0.4*(i/Math.max(1,last))]));
+  } else if (map.hasLayer(clusterLayer)){
     clusterLayer.clearLayers();
-    const MAX_CLUSTER_POINTS = 50000;
-    const use = cumulative.slice(-MAX_CLUSTER_POINTS);
-    const markers = use.map(p => L.marker([p.lat, p.lon]).bindTooltip(
-      `<strong>${p.name||""}</strong><br>${p.activity||""}<br><span class="mono">${p.ym}</span>`,
-      {direction:'top'}
-    ));
-    clusterLayer.addLayers(markers);
+    const MAX = 50000;
+    const use = cum.slice(-MAX);
+    clusterLayer.addLayers(use.map(p => L.marker([p.lat,p.lon]).bindTooltip(
+      `<strong>${p.name||""}</strong><br>${p.activity||""}<br><span class="mono">${p.ym}</span>`, {direction:'top'}
+    )));
   }
 }
-
-/** Fit bounds **/
-function fitToData() {
-  if (!pointsSorted.length) return;
-  const lats = pointsSorted.map(p=>p.lat), lons=pointsSorted.map(p=>p.lon);
+function fit(){
+  if (!points.length) return;
+  const lats = points.map(p=>p.lat), lons = points.map(p=>p.lon);
   map.fitBounds([[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]], { padding:[30,30] });
 }
 
-/** UI events **/
-monthSlider.addEventListener('input', () => { const idx=+monthSlider.value; updateLabels(idx); setViewForIndex(idx); });
-modeSel.addEventListener('change', () => { (modeSel.value==='heat')?ensureHeatLayer():ensureClusterLayer(); setViewForIndex(+monthSlider.value); });
-playBtn.addEventListener('click', () => {
-  if (playTimer) { clearInterval(playTimer); playTimer=null; playBtn.textContent="▶ Play"; return; }
+/* === UI === */
+slider.addEventListener('input', ()=>{ const i=+slider.value; updateLabels(i); setView(i); });
+modeSel.addEventListener('change', ()=>{ (modeSel.value==='heat')?ensureHeat():ensureClusters(); setView(+slider.value); });
+playBtn.addEventListener('click', ()=>{
+  if (playTimer){ clearInterval(playTimer); playTimer=null; playBtn.textContent="▶ Play"; return; }
   playBtn.textContent="⏸ Pause";
-  playTimer = setInterval(() => {
-    let idx=+monthSlider.value;
-    if (idx >= +monthSlider.max) { clearInterval(playTimer); playTimer=null; playBtn.textContent="▶ Play"; return; }
-    monthSlider.value = idx+1; monthSlider.dispatchEvent(new Event('input'));
+  playTimer = setInterval(()=>{
+    let i=+slider.value; if (i>=+slider.max){ clearInterval(playTimer); playTimer=null; playBtn.textContent="▶ Play"; return; }
+    slider.value=i+1; slider.dispatchEvent(new Event('input'));
   }, 600);
 });
-fitBtn.addEventListener('click', fitToData);
+fitBtn.addEventListener('click', fit);
 
-/** ---------- Robust header & column auto-detect ---------- **/
-const norm = s => String(s||"").replace(/[\uFEFF\u00A0]/g," ").trim().toLowerCase().replace(/[\s_\-\.]+/g,""); // strip BOM & NBSP
-
-function pickHeaderByName(headers, nameCands, containsCands=[]) {
-  const map = new Map(headers.map(h => [norm(h), h]));
-  for (const cand of nameCands) { const k = norm(cand); if (map.has(k)) return map.get(k); }
-  // fallback: contains match
-  for (const h of headers) {
-    const n = norm(h);
-    if (containsCands.some(c => n.includes(c))) return h;
-  }
-  return null;
-}
-
-function autoDetectColumnsByValues(rows, headers) {
-  // Find lat/lon columns by numeric ranges; find date by parse success rate
-  const sampleN = Math.min(rows.length, 800); // sample first N
-  const scores = headers.map(() => ({ latHits:0, lonHits:0, dateHits:0, numSeen:0 }));
-
-  for (let i=0; i<sampleN; i++) {
-    const row = rows[i];
-    headers.forEach((h,idx)=>{
-      const raw = row[h];
-      if (raw==null || raw==="") return;
-      scores[idx].numSeen++;
-      const v = parseFloat(String(raw).replace(",","."));
-      if (isFinite(v)) {
-        if (v>=-90 && v<=90) scores[idx].latHits++;
-        if (v>=-180 && v<=180) scores[idx].lonHits++;
-      }
-      const d = parseDateLoose(raw);
-      if (d) scores[idx].dateHits++;
-    });
-  }
-
-  // Choose best lat = highest latHits with latHits/numSeen ≥ 0.6
-  // Choose best lon = highest lonHits with lonHits/numSeen ≥ 0.6 and not the same as lat
-  let latIdx = -1, lonIdx = -1, dateIdx = -1, bestLat = -1, bestLon = -1, bestDate = -1;
-  scores.forEach((s,idx)=>{
-    const latScore = (s.numSeen? s.latHits/s.numSeen : 0);
-    const lonScore = (s.numSeen? s.lonHits/s.numSeen : 0);
-    const dateScore= (s.numSeen? s.dateHits/s.numSeen: 0);
-    if (latScore>bestLat && latScore>=0.6) { bestLat=latScore; latIdx=idx; }
-    if (lonScore>bestLon && lonScore>=0.6) { bestLon=lonScore; lonIdx=idx; }
-    if (dateScore>bestDate && dateScore>=0.5) { bestDate=dateScore; dateIdx=idx; }
-  });
-  if (latIdx===lonIdx) {
-    // if same, pick the second-best lon
-    let secondBest=-1, secondIdx=-1;
-    scores.forEach((s,idx)=>{
-      if (idx===latIdx) return;
-      const lonScore = (s.numSeen? s.lonHits/s.numSeen : 0);
-      if (lonScore>secondBest && lonScore>=0.6) { secondBest=lonScore; secondIdx=idx; }
-    });
-    if (secondIdx!==-1) lonIdx=secondIdx;
-  }
-
-  return {
-    latH: (latIdx>=0? headers[latIdx]: null),
-    lonH: (lonIdx>=0? headers[lonIdx]: null),
-    dateH:(dateIdx>=0? headers[dateIdx]: null),
-    debug: {scores, latIdx, lonIdx, dateIdx}
-  };
-}
-
-/** ---------- Load CSV & build ---------- **/
+/* === Load CSV === */
 statusEl.textContent = "Downloading CSV…";
-
 Papa.parse(CSV_PATH, {
   header: true,
   skipEmptyLines: true,
   worker: true,
-  delimitersToGuess: [",", "\t", ";", "|"],
+  // try multiple delimiters just in case
+  delimitersToGuess: [",", ";", "\t", "|"],
   complete: ({ data, meta }) => {
-    const headers = (meta && meta.fields) ? meta.fields.map(h=>String(h)) : (data.length ? Object.keys(data[0]) : []);
-    if (!headers.length) { statusEl.textContent = "No headers found. Is the file empty?"; return; }
+    const headers = meta?.fields || (data[0] ? Object.keys(data[0]) : []);
+    // Quick sanity check on expected headers
+    const missing = ["Longitude","Latitude","START_OF_MERCHANT_REPORTING"].filter(h => !headers.includes(h));
+    debugEl.innerHTML = "Headers: " + headers.map(h=>`<code>${h}</code>`).join(", ") +
+      (missing.length ? ` <span class="warn"> | Missing expected: ${missing.join(", ")}</span>` : "");
+    if (missing.length){ statusEl.textContent = "Expected columns not found in CSV."; return; }
 
-    // Normalised name-based matching first
-    const latH_byName  = pickHeaderByName(headers, ["Latitude","Lat"], ["lat","latitude"]);
-    const lonH_byName  = pickHeaderByName(headers, ["Longitude","Lon","Lng","Long"], ["lon","lng","long","longitude"]);
-    const dateH_byName = pickHeaderByName(headers, ["START_OF_MERCHANT_REPORTING","Start Date","Start","Joined","Go Live","Activation"], ["startofmerchantreporting","startdate","joined","golive","activation","firstactive"]);
-    const nameH        = pickHeaderByName(headers, ["MERCHANT_NAME","Name","Merchant","Store","Shop"], ["merchant","name","store","shop"]);
-    const actH         = pickHeaderByName(headers, ["BUSINESS_ACTIVITY","Activity","Industry","Category"], ["businessactivity","activity","industry","category"]);
-
-    // If coords or date still missing, auto-detect by values
-    let latH = latH_byName, lonH = lonH_byName, dateH = dateH_byName;
-    let autod = null;
-    if (!latH || !lonH || !dateH) {
-      autod = autoDetectColumnsByValues(data, headers);
-      latH = latH || autod.latH;
-      lonH = lonH || autod.lonH;
-      dateH= dateH|| autod.dateH;
-    }
-
-    // Debug info
-    debugNote.innerHTML =
-      `Headers: ${headers.map(h=>`<code>${h}</code>`).join(", ")}<br>` +
-      `Detected → <b>Lat:</b> ${latH?`<span class="ok">${latH}</span>`:'<span class="warn">missing</span>'} &nbsp; ` +
-      `<b>Lon:</b> ${lonH?`<span class="ok">${lonH}</span>`:'<span class="warn">missing</span>'} &nbsp; ` +
-      `<b>Date:</b> ${dateH?`<span class="ok">${dateH}</span>`:'<span class="warn">missing</span>'} &nbsp; ` +
-      `<b>Name:</b> ${nameH||'—'} &nbsp; <b>Activity:</b> ${actH||'—'}`;
-
-    if (!latH || !lonH) { statusEl.textContent = "No latitude/longitude columns could be detected."; return; }
-    if (!dateH) { statusEl.textContent = "No start date column could be detected."; return; }
-
-    statusEl.textContent = "Parsing rows…";
-
-    // Build clean rows
+    // Build points
     const raw = [];
-    for (const row of data) {
-      const lat = parseFloat(String(row[latH]).replace(",", "."));
-      const lon = parseFloat(String(row[lonH]).replace(",", "."));
+    for (const row of data){
+      const lat = parseFloat(String(row[COLS.lat]).replace(",", "."));
+      const lon = parseFloat(String(row[COLS.lon]).replace(",", "."));
       if (!isFinite(lat) || !isFinite(lon)) continue;
-
-      const d = parseDateLoose(row[dateH]);
-      if (!d) continue;
-
-      raw.push({
-        lat, lon,
-        date: d,
-        ym: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,
-        name: nameH ? (row[nameH] || "") : "",
-        activity: actH ? (row[actH] || "") : ""
-      });
+      const d = parseUK(row[COLS.date]); if (!d) continue;
+      raw.push({ lat, lon, date:d, ym:fmtYM(d), name:row[COLS.name]||"", activity:row[COLS.activity]||"" });
     }
+    if (!raw.length){ statusEl.textContent = "No valid rows with coords + date."; return; }
 
-    if (!raw.length) { statusEl.textContent = "No valid rows with coordinates + date."; return; }
+    raw.sort((a,b)=>a.date-b.date);
+    points = raw;
 
-    raw.sort((a,b)=>a.date - b.date);
-    pointsSorted = raw;
-
-    // Build month index
-    const datesOnly = pointsSorted.map(p=>p.date);
-    months = computeMonths(datesOnly);
-    monthToEndIndex = {};
-    let j=0;
-    for (let i=0;i<months.length;i++){
-      const ym = months[i];
-      while (j < pointsSorted.length && pointsSorted[j].ym <= ym) j++;
-      monthToEndIndex[ym] = j-1;
-    }
+    // Month index
+    const start = new Date(points[0].date.getFullYear(), points[0].date.getMonth(), 1);
+    const end   = new Date();
+    months = [];
+    const cur = new Date(start);
+    while (cur <= end){ months.push(fmtYM(cur)); cur.setMonth(cur.getMonth()+1); }
+    let j=0; monthEnd={};
+    for (const ym of months){ while (j<points.length && points[j].ym <= ym) j++; monthEnd[ym]=j-1; }
 
     // Init UI
-    monthSlider.min = 0;
-    monthSlider.max = Math.max(0, months.length-1);
-    monthSlider.value = monthSlider.max;
-    ensureHeatLayer();
-    updateLabels(+monthSlider.value);
-    setViewForIndex(+monthSlider.value);
+    slider.min = 0; slider.max = Math.max(0, months.length-1); slider.value = slider.max;
+    updateLabels(+slider.value);
+    ensureHeat();
+    setView(+slider.value);
+    fit();
 
-    // Fit bounds
-    const lats = pointsSorted.map(p=>p.lat), lons=pointsSorted.map(p=>p.lon);
-    map.fitBounds([[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]], { padding:[30,30] });
-
-    statusEl.textContent = `Loaded ${pointsSorted.length.toLocaleString()} merchants across ${months.length} months`;
+    statusEl.textContent = `Loaded ${points.length.toLocaleString()} merchants across ${months.length} months`;
   },
-  error: (err) => { statusEl.textContent = `CSV error: ${err?.message || err}`; }
+  error: err => { statusEl.textContent = `CSV error: ${err?.message || err}`; }
 });
 </script>
 </body>
