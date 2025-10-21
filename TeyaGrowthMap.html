@@ -236,7 +236,7 @@ playBtn.addEventListener('click', ()=>{
   playTimer = setInterval(()=>{
     let i=+slider.value; if (i>=+slider.max){ clearInterval(playTimer); playTimer=null; playBtn.textContent="▶ Play"; return; }
     slider.value=i+1; slider.dispatchEvent(new Event('input'));
-  }, 600);
+  }, 300);
 });
 basemapSel.addEventListener('change', ()=>{
   map.removeLayer(currentBase);
