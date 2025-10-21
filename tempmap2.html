@@ -29,11 +29,11 @@
       position: absolute; left: 12px; top: 12px;
       background:#fff; border:1px solid #ddd; border-radius:10px;
       padding:10px 12px; box-shadow:0 6px 20px rgba(0,0,0,.08);
-      display:flex; flex-direction:column; gap:10px; min-width: 320px; z-index:500;
+      display:flex; flex-direction:column; gap:10px; min-width: 340px; z-index:500;
     }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .count { margin-left:auto; font-variant-numeric:tabular-nums; font-weight:600; }
-    .slider { width:100%; display:grid; grid-template-columns: 1fr 60px; align-items:center; gap:8px; }
+    .slider { width:100%; display:grid; grid-template-columns: 1fr 72px; align-items:center; gap:8px; }
     input[type=range] { width:100%; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .legend {
@@ -48,6 +48,8 @@
     button:disabled { opacity:.6; cursor:not-allowed; }
     .note { color:#666; font-size:12px; }
     .warn { color:#b00020; font-weight:600; }
+    .ok { color:#0a7f2e; font-weight:600; }
+    .small { font-size:11px; color:#555; }
   </style>
 </head>
 <body>
@@ -76,11 +78,11 @@
       </div>
     </div>
 
-    <div class="row note">
+    <div class="note">
       CSV: <span class="mono" id="csvName">merchantmapoct2025-dates.csv</span>
       <span id="status" class="count">Loading…</span>
     </div>
-    <div class="note" id="debugNote"></div>
+    <div class="note small" id="debugNote"></div>
   </div>
 
   <div class="legend">
@@ -92,27 +94,7 @@
 /** CONFIG **/
 const CSV_PATH = "merchantmapoct2025-dates.csv";
 
-/** Column auto-detect (case/space tolerant) **/
-const COL_CANDIDATES = {
-  lat:  ["latitude","lat","merchant_lat","lat_dd"],
-  lon:  ["longitude","lon","lng","merchant_lon","long","long_dd"],
-  date: ["start_of_merchant_reporting","start date","start","joined","first_active","go_live_date","activation_date"],
-  name: ["merchant_name","name","merchant","store","shop"],
-  activity:["business_activity","activity","industry","category"]
-};
-
-// normalize header strings
-const norm = s => String(s||"").trim().toLowerCase().replace(/\s+|[_\-]+/g,"");
-
-function pickHeader(actualHeaders, candidates){
-  const set = new Map(actualHeaders.map(h => [norm(h), h]));
-  for (const cand of candidates){
-    if (set.has(norm(cand))) return set.get(norm(cand));
-  }
-  return null;
-}
-
-/** MAP **/
+/** Map **/
 const map = L.map('map', { preferCanvas:true }).setView([51.5, -0.1], 5);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 18, attribution: '&copy; OpenStreetMap'
@@ -143,16 +125,17 @@ let playTimer = null;
 const fmtYM = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 function parseDateLoose(s) {
   if (!s) return null;
-  // Try native
+  // Try native first
   const d1 = new Date(s);
   if (!isNaN(d1)) return d1;
-  // Try dd/mm/yyyy or yyyy-mm-dd
-  const m = String(s).match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  // Try dd/mm/yyyy or mm/dd/yyyy or yyyy-mm-dd
+  const m = String(s).trim().match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
   if (m){
-    // guess format dd/mm/yyyy or mm/dd/yyyy — assume dd/mm first (UK default)
     let d = +m[1], mo = +m[2], y = +m[3]; if (y<100) y += 2000;
-    if (mo>12 && d<=12) { const t = mo; mo = d; d = t; } // swap if obvious
-    return new Date(y, mo-1, d);
+    // Heuristic: assume UK dd/mm; if month > 12 and day <=12, swap
+    if (mo>12 && d<=12) { const t = mo; mo = d; d = t; }
+    const dt = new Date(y, mo-1, d);
+    if (!isNaN(dt)) return dt;
   }
   return null;
 }
@@ -234,35 +217,120 @@ playBtn.addEventListener('click', () => {
 });
 fitBtn.addEventListener('click', fitToData);
 
-/** Load CSV & build **/
+/** ---------- Robust header & column auto-detect ---------- **/
+const norm = s => String(s||"").replace(/[\uFEFF\u00A0]/g," ").trim().toLowerCase().replace(/[\s_\-\.]+/g,""); // strip BOM & NBSP
+
+function pickHeaderByName(headers, nameCands, containsCands=[]) {
+  const map = new Map(headers.map(h => [norm(h), h]));
+  for (const cand of nameCands) { const k = norm(cand); if (map.has(k)) return map.get(k); }
+  // fallback: contains match
+  for (const h of headers) {
+    const n = norm(h);
+    if (containsCands.some(c => n.includes(c))) return h;
+  }
+  return null;
+}
+
+function autoDetectColumnsByValues(rows, headers) {
+  // Find lat/lon columns by numeric ranges; find date by parse success rate
+  const sampleN = Math.min(rows.length, 800); // sample first N
+  const scores = headers.map(() => ({ latHits:0, lonHits:0, dateHits:0, numSeen:0 }));
+
+  for (let i=0; i<sampleN; i++) {
+    const row = rows[i];
+    headers.forEach((h,idx)=>{
+      const raw = row[h];
+      if (raw==null || raw==="") return;
+      scores[idx].numSeen++;
+      const v = parseFloat(String(raw).replace(",","."));
+      if (isFinite(v)) {
+        if (v>=-90 && v<=90) scores[idx].latHits++;
+        if (v>=-180 && v<=180) scores[idx].lonHits++;
+      }
+      const d = parseDateLoose(raw);
+      if (d) scores[idx].dateHits++;
+    });
+  }
+
+  // Choose best lat = highest latHits with latHits/numSeen ≥ 0.6
+  // Choose best lon = highest lonHits with lonHits/numSeen ≥ 0.6 and not the same as lat
+  let latIdx = -1, lonIdx = -1, dateIdx = -1, bestLat = -1, bestLon = -1, bestDate = -1;
+  scores.forEach((s,idx)=>{
+    const latScore = (s.numSeen? s.latHits/s.numSeen : 0);
+    const lonScore = (s.numSeen? s.lonHits/s.numSeen : 0);
+    const dateScore= (s.numSeen? s.dateHits/s.numSeen: 0);
+    if (latScore>bestLat && latScore>=0.6) { bestLat=latScore; latIdx=idx; }
+    if (lonScore>bestLon && lonScore>=0.6) { bestLon=lonScore; lonIdx=idx; }
+    if (dateScore>bestDate && dateScore>=0.5) { bestDate=dateScore; dateIdx=idx; }
+  });
+  if (latIdx===lonIdx) {
+    // if same, pick the second-best lon
+    let secondBest=-1, secondIdx=-1;
+    scores.forEach((s,idx)=>{
+      if (idx===latIdx) return;
+      const lonScore = (s.numSeen? s.lonHits/s.numSeen : 0);
+      if (lonScore>secondBest && lonScore>=0.6) { secondBest=lonScore; secondIdx=idx; }
+    });
+    if (secondIdx!==-1) lonIdx=secondIdx;
+  }
+
+  return {
+    latH: (latIdx>=0? headers[latIdx]: null),
+    lonH: (lonIdx>=0? headers[lonIdx]: null),
+    dateH:(dateIdx>=0? headers[dateIdx]: null),
+    debug: {scores, latIdx, lonIdx, dateIdx}
+  };
+}
+
+/** ---------- Load CSV & build ---------- **/
 statusEl.textContent = "Downloading CSV…";
+
 Papa.parse(CSV_PATH, {
   header: true,
   skipEmptyLines: true,
   worker: true,
+  delimitersToGuess: [",", "\t", ";", "|"],
   complete: ({ data, meta }) => {
-    const headers = (meta && meta.fields) ? meta.fields : (data.length ? Object.keys(data[0]) : []);
-    const latH = pickHeader(headers, COL_CANDIDATES.lat);
-    const lonH = pickHeader(headers, COL_CANDIDATES.lon);
-    const dateH= pickHeader(headers, COL_CANDIDATES.date);
-    const nameH= pickHeader(headers, COL_CANDIDATES.name) || (headers.includes("MERCHANT_NAME")?"MERCHANT_NAME":null);
-    const actH = pickHeader(headers, COL_CANDIDATES.activity) || (headers.includes("BUSINESS_ACTIVITY")?"BUSINESS_ACTIVITY":null);
+    const headers = (meta && meta.fields) ? meta.fields.map(h=>String(h)) : (data.length ? Object.keys(data[0]) : []);
+    if (!headers.length) { statusEl.textContent = "No headers found. Is the file empty?"; return; }
 
+    // Normalised name-based matching first
+    const latH_byName  = pickHeaderByName(headers, ["Latitude","Lat"], ["lat","latitude"]);
+    const lonH_byName  = pickHeaderByName(headers, ["Longitude","Lon","Lng","Long"], ["lon","lng","long","longitude"]);
+    const dateH_byName = pickHeaderByName(headers, ["START_OF_MERCHANT_REPORTING","Start Date","Start","Joined","Go Live","Activation"], ["startofmerchantreporting","startdate","joined","golive","activation","firstactive"]);
+    const nameH        = pickHeaderByName(headers, ["MERCHANT_NAME","Name","Merchant","Store","Shop"], ["merchant","name","store","shop"]);
+    const actH         = pickHeaderByName(headers, ["BUSINESS_ACTIVITY","Activity","Industry","Category"], ["businessactivity","activity","industry","category"]);
+
+    // If coords or date still missing, auto-detect by values
+    let latH = latH_byName, lonH = lonH_byName, dateH = dateH_byName;
+    let autod = null;
+    if (!latH || !lonH || !dateH) {
+      autod = autoDetectColumnsByValues(data, headers);
+      latH = latH || autod.latH;
+      lonH = lonH || autod.lonH;
+      dateH= dateH|| autod.dateH;
+    }
+
+    // Debug info
     debugNote.innerHTML =
-      `Detected headers → <b>Lat:</b> ${latH||'<span class="warn">missing</span>'} &nbsp; ` +
-      `<b>Lon:</b> ${lonH||'<span class="warn">missing</span>'} &nbsp; ` +
-      `<b>Date:</b> ${dateH||'<span class="warn">missing</span>'} &nbsp; ` +
+      `Headers: ${headers.map(h=>`<code>${h}</code>`).join(", ")}<br>` +
+      `Detected → <b>Lat:</b> ${latH?`<span class="ok">${latH}</span>`:'<span class="warn">missing</span>'} &nbsp; ` +
+      `<b>Lon:</b> ${lonH?`<span class="ok">${lonH}</span>`:'<span class="warn">missing</span>'} &nbsp; ` +
+      `<b>Date:</b> ${dateH?`<span class="ok">${dateH}</span>`:'<span class="warn">missing</span>'} &nbsp; ` +
       `<b>Name:</b> ${nameH||'—'} &nbsp; <b>Activity:</b> ${actH||'—'}`;
 
-    if (!latH || !lonH) { statusEl.textContent = "No latitude/longitude headers found."; return; }
-    if (!dateH) { statusEl.textContent = "No start date header found."; return; }
+    if (!latH || !lonH) { statusEl.textContent = "No latitude/longitude columns could be detected."; return; }
+    if (!dateH) { statusEl.textContent = "No start date column could be detected."; return; }
 
     statusEl.textContent = "Parsing rows…";
 
+    // Build clean rows
     const raw = [];
     for (const row of data) {
-      const lat = parseFloat(row[latH]); const lon = parseFloat(row[lonH]);
+      const lat = parseFloat(String(row[latH]).replace(",", "."));
+      const lon = parseFloat(String(row[lonH]).replace(",", "."));
       if (!isFinite(lat) || !isFinite(lon)) continue;
+
       const d = parseDateLoose(row[dateH]);
       if (!d) continue;
 
@@ -270,17 +338,18 @@ Papa.parse(CSV_PATH, {
         lat, lon,
         date: d,
         ym: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,
-        name: row[nameH] || "",
-        activity: row[actH] || ""
+        name: nameH ? (row[nameH] || "") : "",
+        activity: actH ? (row[actH] || "") : ""
       });
     }
 
-    if (raw.length === 0) { statusEl.textContent = "No valid rows with coords + date."; return; }
+    if (!raw.length) { statusEl.textContent = "No valid rows with coordinates + date."; return; }
 
     raw.sort((a,b)=>a.date - b.date);
     pointsSorted = raw;
 
-    const datesOnly = pointsSorted.map(p => p.date);
+    // Build month index
+    const datesOnly = pointsSorted.map(p=>p.date);
     months = computeMonths(datesOnly);
     monthToEndIndex = {};
     let j=0;
@@ -290,14 +359,17 @@ Papa.parse(CSV_PATH, {
       monthToEndIndex[ym] = j-1;
     }
 
-    // init UI
+    // Init UI
     monthSlider.min = 0;
     monthSlider.max = Math.max(0, months.length-1);
     monthSlider.value = monthSlider.max;
-    updateLabels(+monthSlider.value);
     ensureHeatLayer();
+    updateLabels(+monthSlider.value);
     setViewForIndex(+monthSlider.value);
-    fitToData();
+
+    // Fit bounds
+    const lats = pointsSorted.map(p=>p.lat), lons=pointsSorted.map(p=>p.lon);
+    map.fitBounds([[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]], { padding:[30,30] });
 
     statusEl.textContent = `Loaded ${pointsSorted.length.toLocaleString()} merchants across ${months.length} months`;
   },
