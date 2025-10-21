@@ -5,7 +5,7 @@
   <title>Teya Growth Map — Merchants over time</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <!-- Leaflet core -->
+  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
@@ -14,16 +14,14 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
-  <!-- Heatmap (fast for big datasets) -->
+  <!-- Heatmap -->
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 
-  <!-- PapaParse for CSV -->
+  <!-- Papa Parse -->
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
   <style>
-    :root {
-      --blue:#008BB9; --lime:#E0E722;
-    }
+    :root { --blue:#008BB9; --lime:#E0E722; }
     html, body { height:100%; margin:0; }
     body { font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
     #map { position:absolute; inset:0; }
@@ -31,36 +29,25 @@
       position: absolute; left: 12px; top: 12px;
       background:#fff; border:1px solid #ddd; border-radius:10px;
       padding:10px 12px; box-shadow:0 6px 20px rgba(0,0,0,.08);
-      display:flex; flex-direction:column; gap:10px; min-width: 320px;
+      display:flex; flex-direction:column; gap:10px; min-width: 320px; z-index:500;
     }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    .row label { font-size:12px; color:#555; }
     .count { margin-left:auto; font-variant-numeric:tabular-nums; font-weight:600; }
-    .slider {
-      width:100%;
-      display:grid;
-      grid-template-columns: 1fr 60px;
-      align-items:center;
-      gap:8px;
-    }
+    .slider { width:100%; display:grid; grid-template-columns: 1fr 60px; align-items:center; gap:8px; }
     input[type=range] { width:100%; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .legend {
       position:absolute; right:12px; bottom:12px;
       background:#fff; border:1px solid #ddd; border-radius:10px;
-      padding:8px 10px; font-size:12px; box-shadow:0 6px 20px rgba(0,0,0,.08);
+      padding:8px 10px; font-size:12px; box-shadow:0 6px 20px rgba(0,0,0,.08); z-index:500;
     }
     .badge { display:inline-block; padding:2px 6px; border-radius:999px; font-size:11px; }
     .b-blue { background:var(--blue); color:#fff; }
     .b-lime { background:var(--lime); }
-    .b-grey { background:#eee; }
-    button, select {
-      padding:6px 10px; border:1px solid #ccc; border-radius:8px; background:#fff; cursor:pointer;
-    }
+    button, select { padding:6px 10px; border:1px solid #ccc; border-radius:8px; background:#fff; cursor:pointer; }
     button:disabled { opacity:.6; cursor:not-allowed; }
-    .pill { border-radius:999px; }
     .note { color:#666; font-size:12px; }
-    .linklike { color:var(--blue); cursor:pointer; text-decoration:underline; }
+    .warn { color:#b00020; font-weight:600; }
   </style>
 </head>
 <body>
@@ -73,7 +60,7 @@
     </div>
 
     <div class="row">
-      <button id="playBtn" class="pill">▶ Play</button>
+      <button id="playBtn">▶ Play</button>
       <select id="modeSel" title="Visualisation mode">
         <option value="heat" selected>Heatmap (fast)</option>
         <option value="cluster">Marker clusters</option>
@@ -90,36 +77,51 @@
     </div>
 
     <div class="row note">
-      CSV: <span class="mono">merchantmapoct2025-dates.csv</span>
+      CSV: <span class="mono" id="csvName">merchantmapoct2025-dates.csv</span>
       <span id="status" class="count">Loading…</span>
     </div>
+    <div class="note" id="debugNote"></div>
   </div>
 
   <div class="legend">
-    <div><span class="badge b-blue">Blue</span> = primary series / clusters</div>
-    <div><span class="badge b-lime">Lime</span> = newer concentrations (heat intensity)</div>
-    <div class="note" id="legendNote"></div>
+    <div><span class="badge b-blue">Blue</span> = cumulative to selected month</div>
+    <div><span class="badge b-lime">Lime</span> = intensity accent</div>
   </div>
 
 <script>
 /** CONFIG **/
 const CSV_PATH = "merchantmapoct2025-dates.csv";
-const COLS = {
-  id: "ID",
-  name: "MERCHANT_NAME",
-  activity: "BUSINESS_ACTIVITY",
-  date: "START_OF_MERCHANT_REPORTING",
-  lat: "Latitude",
-  lon: "Longitude"
+
+/** Column auto-detect (case/space tolerant) **/
+const COL_CANDIDATES = {
+  lat:  ["latitude","lat","merchant_lat","lat_dd"],
+  lon:  ["longitude","lon","lng","merchant_lon","long","long_dd"],
+  date: ["start_of_merchant_reporting","start date","start","joined","first_active","go_live_date","activation_date"],
+  name: ["merchant_name","name","merchant","store","shop"],
+  activity:["business_activity","activity","industry","category"]
 };
+
+// normalize header strings
+const norm = s => String(s||"").trim().toLowerCase().replace(/\s+|[_\-]+/g,"");
+
+function pickHeader(actualHeaders, candidates){
+  const set = new Map(actualHeaders.map(h => [norm(h), h]));
+  for (const cand of candidates){
+    if (set.has(norm(cand))) return set.get(norm(cand));
+  }
+  return null;
+}
 
 /** MAP **/
 const map = L.map('map', { preferCanvas:true }).setView([51.5, -0.1], 5);
-const base = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 18, attribution: '&copy; OpenStreetMap'
 }).addTo(map);
 
+/** UI refs **/
 const statusEl = document.getElementById('status');
+const debugNote = document.getElementById('debugNote');
+const csvNameEl = document.getElementById('csvName');
 const totalCountEl = document.getElementById('totalCount');
 const monthSlider = document.getElementById('monthSlider');
 const monthLabel = document.getElementById('monthLabel');
@@ -127,218 +129,179 @@ const rangeLabel = document.getElementById('rangeLabel');
 const playBtn = document.getElementById('playBtn');
 const modeSel = document.getElementById('modeSel');
 const fitBtn = document.getElementById('fitBtn');
-const legendNote = document.getElementById('legendNote');
 
-let pointsSorted = [];     // [{lat,lon, date: Date, ym: 'YYYY-MM', name, activity}]
-let months = [];           // ['YYYY-MM', ...] sorted ascending
-let monthToEndIndex = {};  // { 'YYYY-MM': lastIndexInPointsSortedForCumulative }
+csvNameEl.textContent = CSV_PATH;
+
+let pointsSorted = [];     // [{lat,lon,date,ym,name,activity}]
+let months = [];
+let monthToEndIndex = {};
 let heatLayer = null;
 let clusterLayer = null;
 let playTimer = null;
 
 /** Helpers **/
 const fmtYM = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-function parseDate(s) {
+function parseDateLoose(s) {
   if (!s) return null;
-  // Accept ISO or d/m/y etc. Let Date parse, fallback
-  const d = new Date(s);
-  if (!isNaN(d)) return d;
-  // try yyyy-mm-dd substring
-  const m = String(s).match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (m) return new Date(+m[1], +m[2]-1, +m[3]);
+  // Try native
+  const d1 = new Date(s);
+  if (!isNaN(d1)) return d1;
+  // Try dd/mm/yyyy or yyyy-mm-dd
+  const m = String(s).match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (m){
+    // guess format dd/mm/yyyy or mm/dd/yyyy — assume dd/mm first (UK default)
+    let d = +m[1], mo = +m[2], y = +m[3]; if (y<100) y += 2000;
+    if (mo>12 && d<=12) { const t = mo; mo = d; d = t; } // swap if obvious
+    return new Date(y, mo-1, d);
+  }
   return null;
 }
 function computeMonths(sortedDates) {
-  if (sortedDates.length===0) return [];
+  if (!sortedDates.length) return [];
   const start = new Date(sortedDates[0].getFullYear(), sortedDates[0].getMonth(), 1);
-  const end = new Date(); // up to today
+  const end = new Date();
   const arr = [];
   let cur = new Date(start);
-  while (cur <= end) {
-    arr.push(fmtYM(cur));
-    cur.setMonth(cur.getMonth() + 1);
-  }
+  while (cur <= end) { arr.push(fmtYM(cur)); cur.setMonth(cur.getMonth()+1); }
   return arr;
 }
 function updateLabels(idx) {
   const ym = months[idx] || '—';
   monthLabel.textContent = ym;
-  if (months.length) {
-    rangeLabel.textContent = `${months[0]} → ${months[months.length-1]}`;
-  }
+  if (months.length) rangeLabel.textContent = `${months[0]} → ${months[months.length-1]}`;
 }
 
-/** Visual updates **/
+/** Layers **/
 function ensureHeatLayer() {
-  if (!heatLayer) {
-    heatLayer = L.heatLayer([], { radius:18, blur:15, maxZoom:12 });
-  }
+  if (!heatLayer) heatLayer = L.heatLayer([], { radius:18, blur:15, maxZoom:12 });
   if (!map.hasLayer(heatLayer)) map.addLayer(heatLayer);
   if (clusterLayer && map.hasLayer(clusterLayer)) map.removeLayer(clusterLayer);
-  legendNote.textContent = `Heatmap shows density; slider reveals cumulative growth over months.`;
 }
 function ensureClusterLayer() {
-  if (!clusterLayer) {
-    clusterLayer = L.markerClusterGroup({ chunkedLoading:true });
-  } else {
-    clusterLayer.clearLayers();
-  }
+  if (!clusterLayer) clusterLayer = L.markerClusterGroup({ chunkedLoading:true });
+  else clusterLayer.clearLayers();
   if (!map.hasLayer(clusterLayer)) map.addLayer(clusterLayer);
   if (heatLayer && map.hasLayer(heatLayer)) map.removeLayer(heatLayer);
-  legendNote.textContent = `Clusters expand on click; may be slower for very large datasets.`;
 }
 
+/** Draw cumulative up to slider index **/
 function setViewForIndex(idx) {
-  // cumulative end index for month idx
   const ym = months[idx];
   const endIndex = monthToEndIndex[ym] ?? -1;
   if (endIndex < 0) {
-    // nothing yet
     if (heatLayer) heatLayer.setLatLngs([]);
     if (clusterLayer) clusterLayer.clearLayers();
     totalCountEl.textContent = "0";
     return;
   }
-
   const cumulative = pointsSorted.slice(0, endIndex + 1);
-
   totalCountEl.textContent = cumulative.length.toLocaleString();
 
   if (map.hasLayer(heatLayer)) {
-    // Heat expects [lat, lon, intensity]
-    // To emphasize recency a bit, weight slightly more recent months
     const lastIdx = endIndex;
     const heatPts = cumulative.map((p,i) => [p.lat, p.lon, 0.6 + 0.4 * (i/Math.max(1,lastIdx))]);
     heatLayer.setLatLngs(heatPts);
   } else if (map.hasLayer(clusterLayer)) {
     clusterLayer.clearLayers();
-    // Limit clusters to avoid lockups if extreme (optional safety)
     const MAX_CLUSTER_POINTS = 50000;
     const use = cumulative.slice(-MAX_CLUSTER_POINTS);
-    const markers = use.map(p => {
-      const m = L.marker([p.lat, p.lon]);
-      // Optional: show data on hover
-      const addr = p.addr || "";
-      const name = p.name || "";
-      const act = p.activity || "";
-      m.bindTooltip(`<strong>${name}</strong><br>${act || ""}<br><span class="mono">${p.ym}</span>`, {direction:'top'});
-      return m;
-    });
+    const markers = use.map(p => L.marker([p.lat, p.lon]).bindTooltip(
+      `<strong>${p.name||""}</strong><br>${p.activity||""}<br><span class="mono">${p.ym}</span>`,
+      {direction:'top'}
+    ));
     clusterLayer.addLayers(markers);
   }
 }
 
-/** Fit bounds to all points (uses full dataset) **/
+/** Fit bounds **/
 function fitToData() {
   if (!pointsSorted.length) return;
-  const lats = pointsSorted.map(p=>p.lat);
-  const lons = pointsSorted.map(p=>p.lon);
-  const minLat = Math.min(...lats), maxLat=Math.max(...lats);
-  const minLon = Math.min(...lons), maxLon=Math.max(...lons);
-  map.fitBounds([[minLat,minLon],[maxLat,maxLon]], { padding:[30,30] });
+  const lats = pointsSorted.map(p=>p.lat), lons=pointsSorted.map(p=>p.lon);
+  map.fitBounds([[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]], { padding:[30,30] });
 }
 
 /** UI events **/
-monthSlider.addEventListener('input', () => {
-  const idx = +monthSlider.value;
-  updateLabels(idx);
-  setViewForIndex(idx);
-});
-
-modeSel.addEventListener('change', () => {
-  if (modeSel.value === 'heat') {
-    ensureHeatLayer();
-  } else {
-    ensureClusterLayer();
-  }
-  setViewForIndex(+monthSlider.value);
-});
-
+monthSlider.addEventListener('input', () => { const idx=+monthSlider.value; updateLabels(idx); setViewForIndex(idx); });
+modeSel.addEventListener('change', () => { (modeSel.value==='heat')?ensureHeatLayer():ensureClusterLayer(); setViewForIndex(+monthSlider.value); });
 playBtn.addEventListener('click', () => {
-  if (playTimer) {
-    clearInterval(playTimer); playTimer = null;
-    playBtn.textContent = "▶ Play";
-    return;
-  }
-  playBtn.textContent = "⏸ Pause";
+  if (playTimer) { clearInterval(playTimer); playTimer=null; playBtn.textContent="▶ Play"; return; }
+  playBtn.textContent="⏸ Pause";
   playTimer = setInterval(() => {
-    let idx = +monthSlider.value;
-    if (idx >= +monthSlider.max) {
-      clearInterval(playTimer); playTimer = null;
-      playBtn.textContent = "▶ Play";
-      return;
-    }
-    monthSlider.value = idx + 1;
-    monthSlider.dispatchEvent(new Event('input'));
+    let idx=+monthSlider.value;
+    if (idx >= +monthSlider.max) { clearInterval(playTimer); playTimer=null; playBtn.textContent="▶ Play"; return; }
+    monthSlider.value = idx+1; monthSlider.dispatchEvent(new Event('input'));
   }, 600);
 });
-
 fitBtn.addEventListener('click', fitToData);
 
-/** Load CSV, build timeline **/
+/** Load CSV & build **/
 statusEl.textContent = "Downloading CSV…";
 Papa.parse(CSV_PATH, {
   header: true,
   skipEmptyLines: true,
   worker: true,
-  complete: ({ data }) => {
-    statusEl.textContent = "Parsing & indexing…";
+  complete: ({ data, meta }) => {
+    const headers = (meta && meta.fields) ? meta.fields : (data.length ? Object.keys(data[0]) : []);
+    const latH = pickHeader(headers, COL_CANDIDATES.lat);
+    const lonH = pickHeader(headers, COL_CANDIDATES.lon);
+    const dateH= pickHeader(headers, COL_CANDIDATES.date);
+    const nameH= pickHeader(headers, COL_CANDIDATES.name) || (headers.includes("MERCHANT_NAME")?"MERCHANT_NAME":null);
+    const actH = pickHeader(headers, COL_CANDIDATES.activity) || (headers.includes("BUSINESS_ACTIVITY")?"BUSINESS_ACTIVITY":null);
 
-    // 1) Keep only rows with usable lat/lon & date
-    let raw = [];
+    debugNote.innerHTML =
+      `Detected headers → <b>Lat:</b> ${latH||'<span class="warn">missing</span>'} &nbsp; ` +
+      `<b>Lon:</b> ${lonH||'<span class="warn">missing</span>'} &nbsp; ` +
+      `<b>Date:</b> ${dateH||'<span class="warn">missing</span>'} &nbsp; ` +
+      `<b>Name:</b> ${nameH||'—'} &nbsp; <b>Activity:</b> ${actH||'—'}`;
+
+    if (!latH || !lonH) { statusEl.textContent = "No latitude/longitude headers found."; return; }
+    if (!dateH) { statusEl.textContent = "No start date header found."; return; }
+
+    statusEl.textContent = "Parsing rows…";
+
+    const raw = [];
     for (const row of data) {
-      const lat = parseFloat(row[COLS.lat]);
-      const lon = parseFloat(row[COLS.lon]);
+      const lat = parseFloat(row[latH]); const lon = parseFloat(row[lonH]);
       if (!isFinite(lat) || !isFinite(lon)) continue;
-      const d = parseDate(row[COLS.date]);
+      const d = parseDateLoose(row[dateH]);
       if (!d) continue;
 
       raw.push({
         lat, lon,
         date: d,
         ym: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,
-        name: row[COLS.name] || "",
-        activity: row[COLS.activity] || "",
-        addr: "", // not needed here, but left in case you add popups
+        name: row[nameH] || "",
+        activity: row[actH] || ""
       });
     }
 
-    if (raw.length === 0) {
-      statusEl.textContent = "No valid rows with Latitude/Longitude and date.";
-      return;
-    }
+    if (raw.length === 0) { statusEl.textContent = "No valid rows with coords + date."; return; }
 
-    // 2) Sort by date ascending (cumulative growth)
-    raw.sort((a,b) => a.date - b.date);
+    raw.sort((a,b)=>a.date - b.date);
     pointsSorted = raw;
 
-    // 3) Build the month list from earliest to today; map each month to cumulative end index
     const datesOnly = pointsSorted.map(p => p.date);
     months = computeMonths(datesOnly);
     monthToEndIndex = {};
-    let j = 0;
-    for (let i = 0; i < months.length; i++) {
+    let j=0;
+    for (let i=0;i<months.length;i++){
       const ym = months[i];
       while (j < pointsSorted.length && pointsSorted[j].ym <= ym) j++;
-      monthToEndIndex[ym] = j - 1; // last index included
+      monthToEndIndex[ym] = j-1;
     }
 
-    // 4) Init UI
+    // init UI
     monthSlider.min = 0;
-    monthSlider.max = Math.max(0, months.length - 1);
-    // Set default to last month in data (today bucket)
+    monthSlider.max = Math.max(0, months.length-1);
     monthSlider.value = monthSlider.max;
-
     updateLabels(+monthSlider.value);
-    ensureHeatLayer(); // default mode
+    ensureHeatLayer();
     setViewForIndex(+monthSlider.value);
     fitToData();
 
     statusEl.textContent = `Loaded ${pointsSorted.length.toLocaleString()} merchants across ${months.length} months`;
   },
-  error: (err) => {
-    statusEl.textContent = `CSV error: ${err && err.message ? err.message : err}`;
-  }
+  error: (err) => { statusEl.textContent = `CSV error: ${err?.message || err}`; }
 });
 </script>
 </body>
