@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-<!-- D3 v5 + d3-hexbin (no Leaflet hexbin plugin — we draw with SVG directly) -->
+<!-- D3 v5 + d3-hexbin (we draw with SVG directly; no Leaflet hexbin plugin) -->
 <script src="https://unpkg.com/d3@5/dist/d3.min.js"></script>
 <script src="https://unpkg.com/d3-hexbin@0.2.2/build/d3-hexbin.min.js"></script>
 
@@ -25,12 +25,8 @@
   /* Compact HUD */
   .hud { position:absolute; left:12px; top:12px; z-index:500; display:flex; gap:6px; }
   .toolbar {
-    background: rgba(255,255,255,0.75);
-    border:1px solid rgba(17,24,39,0.08);
-    backdrop-filter: blur(6px);
-    border-radius:10px;
-    padding:6px 8px;
-    box-shadow:0 6px 18px rgba(0,0,0,.06);
+    background: rgba(255,255,255,0.75); border:1px solid rgba(17,24,39,0.08); backdrop-filter: blur(6px);
+    border-radius:10px; padding:6px 8px; box-shadow:0 6px 18px rgba(0,0,0,.06);
     display:flex; align-items:center; gap:8px;
   }
   .btn, select {
@@ -42,8 +38,7 @@
 
   .range-wrap { display:flex; align-items:center; gap:8px; min-width:220px; }
   .range {
-    -webkit-appearance:none; appearance:none;
-    width:100%; height:4px; border-radius:999px; background:#e5e7eb; outline:none;
+    -webkit-appearance:none; appearance:none; width:100%; height:4px; border-radius:999px; background:#e5e7eb; outline:none;
   }
   .range::-webkit-slider-thumb {
     -webkit-appearance:none; appearance:none; width:14px; height:14px; border-radius:50%;
@@ -57,11 +52,8 @@
   /* Bottom-left tiny status */
   .chip {
     position:absolute; left:12px; bottom:12px; z-index:500;
-    background:rgba(255,255,255,0.75);
-    border:1px solid rgba(17,24,39,0.08);
-    border-radius:999px; padding:4px 8px;
-    font-variant-numeric: tabular-nums;
-    box-shadow:0 6px 18px rgba(0,0,0,.06);
+    background:rgba(255,255,255,0.75); border:1px solid rgba(17,24,39,0.08);
+    border-radius:999px; padding:4px 8px; font-variant-numeric: tabular-nums; box-shadow:0 6px 18px rgba(0,0,0,.06);
   }
   .chip code { background:transparent; padding:0; }
 
@@ -80,9 +72,7 @@
   <div class="hud">
     <div class="toolbar">
       <button id="playBtn" class="btn primary" title="Play/Pause">▶</button>
-      <div class="range-wrap">
-        <input id="qSlider" class="range" type="range" min="0" max="0" step="1" value="0" />
-      </div>
+      <div class="range-wrap"><input id="qSlider" class="range" type="range" min="0" max="0" step="1" value="0" /></div>
       <select id="modeSel" title="Aggregation">
         <option value="cum" selected>Cumulative</option>
         <option value="quarter">This quarter only</option>
@@ -101,9 +91,7 @@
     </div>
   </div>
 
-  <div class="chip">
-    <span id="totalCount">0</span> merchants • CSV <code>merchantmapoct25-dates.csv</code>
-  </div>
+  <div class="chip"><span id="totalCount">0</span> merchants • CSV <code>merchantmapoct25-dates.csv</code></div>
 
 <script>
 /* === CSV & columns === */
@@ -122,6 +110,11 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png
   maxZoom: 19, attribution: '&copy; OSM & CARTO'
 }).addTo(map);
 
+/* Use Leaflet's own SVG renderer (fixes clipping on zoom/pan) */
+const leafletSvg = L.svg({ padding: 0.75 }).addTo(map); // padding adds overscan so edges aren't clipped
+const svg = d3.select(leafletSvg._container);           // Leaflet-managed <svg>
+const g   = svg.append("g").attr("class","hex-layer");
+
 /* On-map quarterly label (between Iceland & UK) */
 const OVERLAY_POS = [60.8, -11];
 let qMarker = L.marker(OVERLAY_POS, {
@@ -129,10 +122,6 @@ let qMarker = L.marker(OVERLAY_POS, {
   icon: L.divIcon({ className:'', html:'<div class="q-label">—</div>', iconSize:[0,0] })
 }).addTo(map);
 const setQText = t => { const el = qMarker.getElement(); if (el) el.querySelector('.q-label').textContent = t || '—'; };
-
-/* === D3 SVG overlay bound to Leaflet’s overlay pane === */
-const svg = d3.select(map.getPanes().overlayPane).append("svg").style("position","absolute");
-const g   = svg.append("g").attr("class","hex-layer");
 
 /* === State === */
 let points = [], quarters = [], qEnd = {}, playTimer = null;
@@ -154,40 +143,25 @@ function parseUK(s){
   return isNaN(d) ? null : d;
 }
 
-/* === Hexbin render === */
+/* === Hexbin render (using Leaflet's SVG; no manual sizing needed) === */
 function renderHexes(latlngs){
-  // Project lat/lon to screen coords
+  // Project lat/lon to the SVG's local coordinate space
   const projected = latlngs.map(([lat,lon])=>{
     const pt = map.latLngToLayerPoint([lat,lon]);
     return {x:pt.x, y:pt.y};
   });
 
-  // Size & origin of the overlay SVG — with padding to avoid clipping at edges
   const radius = parseInt(hexSize.value,10) || 14;
-  const pad = radius*2 + 40; // generous buffer
-  const bounds = map.getPixelBounds();
-  const left   = bounds.min.x - pad;
-  const top    = bounds.min.y - pad;
-  const width  = (bounds.max.x - bounds.min.x) + pad*2;
-  const height = (bounds.max.y - bounds.min.y) + pad*2;
-
-  svg.attr("width", width)
-     .attr("height", height)
-     .style("left", `${left}px`)
-     .style("top", `${top}px`);
-  g.attr("transform", `translate(${-left},${-top})`);
-
-  // Build hexbin in pixel space
   const hexbin = d3.hexbin().radius(radius).x(d=>d.x).y(d=>d.y);
   const bins = hexbin(projected);
 
-  // Colour scales
+  // Colour scales (stronger lime by default)
   const maxCount = d3.max(bins, b=>b.length) || 1;
   const color = (scaleSel.value === 'blue')
     ? d3.scaleSequential(d3.interpolateGnBu).domain([0, maxCount])
     : d3.scaleLinear()
         .domain([0, maxCount*0.5, maxCount])
-        .range(['#fbfce6', '#E0E722', '#93990f']) // light lime -> brand lime -> deeper lime
+        .range(['#c7cf1a', '#E0E722', '#8a910e']) // darker start -> brand lime -> deeper lime
         .clamp(true);
 
   // JOIN
@@ -208,13 +182,13 @@ function renderHexes(latlngs){
   sel.enter().append("path")
      .attr("class","hex")
      .attr("transform", d=>`translate(${d.x},${d.y})`)
-     .attr("d", hexbin.hexagon(0))          // animate in from 0
+     .attr("d", hexbin.hexagon(0))
      .attr("fill", d=>color(d.length))
      .attr("fill-opacity", 0.9)
      .attr("stroke", "rgba(255,255,255,0.9)")
      .attr("stroke-width", 0.5)
      .transition().duration(120)
-     .attr("d", hexbin.hexagon());          // grow to full size
+     .attr("d", hexbin.hexagon());
 }
 
 /* === Update view for a given quarter index === */
@@ -247,8 +221,8 @@ slider.addEventListener('input', ()=>setView(+slider.value));
 [modeSel, scaleSel, hexSize].forEach(el=>el.addEventListener('change', ()=>setView(+slider.value)));
 fitBtn.addEventListener('click', fit);
 
-// Re-render when map moves/zooms (reproject to pixels) — padding prevents edge clipping
-map.on('moveend zoomend', ()=>setView(+slider.value));
+// Re-render on pan/zoom (Leaflet's SVG takes care of sizing; we just reproject)
+map.on('move zoom moveend zoomend', ()=>setView(+slider.value));
 
 // Play (fast: 150ms)
 playBtn.addEventListener('click', ()=>{
