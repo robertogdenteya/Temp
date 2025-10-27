@@ -1,75 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<title>Teya Growth Map — Quarterly Hexbin (No Plugin)</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-<!-- Only D3 v5 + d3-hexbin (no leaflet hexbin plugin needed) -->
-<script src="https://unpkg.com/d3@5/dist/d3.min.js"></script>
-<script src="https://unpkg.com/d3-hexbin@0.2.2/build/d3-hexbin.min.js"></script>
-
-<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-<style>
-  :root { --blue:#008BB9; --lime:#E0E722; --ink:#111827; }
-  html, body { height:100%; margin:0; background:#fff; }
-  body { font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; color:var(--ink); }
-  #map { position:absolute; inset:0; }
-
-  .hud { position:absolute; left:12px; top:12px; z-index:500; display:flex; gap:6px; }
-  .toolbar {
-    background: rgba(255,255,255,0.75); border:1px solid rgba(17,24,39,0.08); backdrop-filter: blur(6px);
-    border-radius:10px; padding:6px 8px; box-shadow:0 6px 18px rgba(0,0,0,.06);
-    display:flex; align-items:center; gap:8px;
-  }
-  .btn, select {
-    appearance:none; -webkit-appearance:none; font:inherit; padding:4px 8px;
-    border:1px solid #d1d5db; border-radius:8px; background:#fff; line-height:1.1; height:26px; cursor:pointer;
-  }
-  .btn.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
-  .range-wrap { display:flex; align-items:center; gap:8px; min-width:220px; }
-  .range { -webkit-appearance:none; appearance:none; width:100%; height:4px; border-radius:999px; background:#e5e7eb; outline:none; }
-  .range::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:var(--blue); border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.25); cursor:pointer; margin-top:-5px; }
-  .range::-moz-range-thumb { width:14px; height:14px; border-radius:50%; background:var(--blue); border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.25); cursor:pointer; }
-
-  .chip { position:absolute; left:12px; bottom:12px; z-index:500; background:rgba(255,255,255,0.75);
-    border:1px solid rgba(17,24,39,0.08); border-radius:999px; padding:4px 8px; font-variant-numeric:tabular-nums; box-shadow:0 6px 18px rgba(0,0,0,.06); }
-  .chip code { background:transparent; padding:0; }
-
-  /* On-map quarter label */
-  .q-label {
-    font-weight:800; letter-spacing:0.01em; font-size: clamp(18px,3.2vw,36px); color:#0c1f27;
-    background:rgba(255,255,255,0.72); border:1px solid rgba(17,24,39,0.08);
-    border-radius:12px; padding:6px 10px; box-shadow:0 6px 18px rgba(0,0,0,.06);
-    backdrop-filter: blur(6px); user-select:none; pointer-events:none; white-space:nowrap;
-  }
-</style>
-</head>
-<body>
-  <div id="map"></div>
-
-  <div class="hud">
-    <div class="toolbar">
-      <button id="playBtn" class="btn primary">▶</button>
-      <div class="range-wrap"><input id="qSlider" class="range" type="range" min="0" max="0" step="1" value="0" /></div>
-      <select id="modeSel" title="Aggregation mode">
-        <option value="cum" selected>Cumulative</option>
-        <option value="quarter">This quarter only</option>
-      </select>
-      <select id="scaleSel" title="Colour scale">
-        <option value="brand" selected>Brand (Blue→Lime)</option>
-        <option value="blue">Blue</option>
-      </select>
-      <select id="hexSize" title="Hex size">
-        <option value="10">Fine</option><option value="14" selected>Normal</option><option value="18">Coarse</option><option value="22">Very coarse</option>
-      </select>
-      <button id="fitBtn" class="btn">Fit</button>
-    </div>
-  </div>
-
-  <div class="chip"><span id="totalCount">0</span> merchants • CSV <code>merchantmapoct25-dates.csv</code></div>
+<!-- … keep everything above the <script> the same as your current vanilla file … -->
 
 <script>
 /* === CSV & columns === */
@@ -85,7 +14,7 @@ const OVERLAY_POS=[60.8,-11];
 let qMarker=L.marker(OVERLAY_POS,{interactive:false,zIndexOffset:10000,icon:L.divIcon({className:'',html:'<div class="q-label">—</div>',iconSize:[0,0]})}).addTo(map);
 const setQText=t=>{const el=qMarker.getElement(); if(el) el.querySelector('.q-label').textContent=t||'—';};
 
-/* === D3 SVG overlay bound to Leaflet’s overlayPane === */
+/* === D3 SVG overlay bound to Leaflet’s overlay pane === */
 const svg = d3.select(map.getPanes().overlayPane).append("svg").style("position","absolute");
 const g   = svg.append("g").attr("class","hex-layer");
 
@@ -95,7 +24,7 @@ const totalEl=document.getElementById('totalCount');
 const playBtn=document.getElementById('playBtn');
 const slider=document.getElementById('qSlider');
 const modeSel=document.getElementById('modeSel');
-const scaleSel=document.getElementById('scaleSel');
+const scaleSel=document.getElementById('scaleSel'); // now defaults to Lime
 const hexSize=document.getElementById('hexSize');
 const fitBtn=document.getElementById('fitBtn');
 
@@ -112,25 +41,35 @@ function renderHexes(latlngs){
     return {x:pt.x, y:pt.y};
   });
 
-  // Size & origin of the overlay SVG
+  // Size & origin of the overlay SVG — with padding to avoid clipping
+  const radius = parseInt(hexSize.value,10) || 14;
+  const pad = radius*2 + 40; // <- generous buffer
   const bounds = map.getPixelBounds();
-  const topLeft = bounds.min, bottomRight = bounds.max;
-  svg.attr("width", bottomRight.x - topLeft.x)
-     .attr("height", bottomRight.y - topLeft.y)
-     .style("left", `${topLeft.x}px`)
-     .style("top", `${topLeft.y}px`);
-  g.attr("transform", `translate(${-topLeft.x},${-topLeft.y})`);
+  const left   = bounds.min.x - pad;
+  const top    = bounds.min.y - pad;
+  const width  = (bounds.max.x - bounds.min.x) + pad*2;
+  const height = (bounds.max.y - bounds.min.y) + pad*2;
+
+  svg.attr("width", width)
+     .attr("height", height)
+     .style("left", `${left}px`)
+     .style("top", `${top}px`);
+  g.attr("transform", `translate(${-left},${-top})`);
 
   // Build hexbin in pixel space
-  const radius = parseInt(hexSize.value,10) || 14;
   const hexbin = d3.hexbin().radius(radius).x(d=>d.x).y(d=>d.y);
   const bins = hexbin(projected);
 
-  // Colour scales (brand)
+  // Colour scales
+  // Default = Lime (brand): light lime -> Teya Lime -> olive-lime for peaks
   const maxCount = d3.max(bins, b=>b.length) || 1;
-  const color = (scaleSel.value==='blue')
-    ? d3.scaleSequential(d3.interpolateGnBu).domain([0, maxCount])
-    : d3.scaleLinear().domain([0, maxCount*0.5, maxCount]).range(['#a8d5e3','#008BB9','#E0E722']).clamp(true);
+  const color =
+    (scaleSel.value==='blue')
+      ? d3.scaleSequential(d3.interpolateGnBu).domain([0, maxCount])
+      : d3.scaleLinear()
+          .domain([0, maxCount*0.5, maxCount])
+          .range(['#f6f8c8', '#E0E722', '#aeb416']) // light -> brand lime -> deeper lime
+          .clamp(true);
 
   // JOIN
   const sel = g.selectAll("path.hex").data(bins, d=>d.x+"-"+d.y);
@@ -143,9 +82,8 @@ function renderHexes(latlngs){
      .attr("d", hexbin.hexagon())
      .attr("fill", d=>color(d.length))
      .attr("fill-opacity", 0.9)
-     .attr("stroke", "white")
-     .attr("stroke-width", 0.5)
-     .attr("stroke-opacity", 0.8);
+     .attr("stroke", "rgba(255,255,255,0.9)")
+     .attr("stroke-width", 0.5);
 
   // ENTER
   sel.enter().append("path")
@@ -154,9 +92,8 @@ function renderHexes(latlngs){
      .attr("d", hexbin.hexagon(0))          // animate in from 0
      .attr("fill", d=>color(d.length))
      .attr("fill-opacity", 0.9)
-     .attr("stroke", "white")
+     .attr("stroke", "rgba(255,255,255,0.9)")
      .attr("stroke-width", 0.5)
-     .attr("stroke-opacity", 0.8)
      .transition().duration(120)
      .attr("d", hexbin.hexagon());          // grow to full size
 }
@@ -189,7 +126,7 @@ slider.addEventListener('input',()=>setView(+slider.value));
 [modeSel, scaleSel, hexSize].forEach(el=>el.addEventListener('change',()=>setView(+slider.value)));
 fitBtn.addEventListener('click', fit);
 
-// Re-render hexes when map moves or zooms (reproject to pixels)
+// Re-render hexes when map moves/zooms (reproject to pixels) — the padding above prevents edge clipping
 map.on('moveend zoomend', ()=>setView(+slider.value));
 
 // Play (fast: 150ms)
@@ -224,8 +161,7 @@ playBtn.addEventListener('click',()=>{
     // Quarter sequence
     const startQ=qKey(new Date(rows[0].date.getFullYear(), Math.floor(rows[0].date.getMonth()/3)*3, 1));
     const now=new Date(); const endQ=qKey(now);
-    quarters=[];
-    let yq=startQ.split('-Q'); let y=+yq[0], q=+yq[1];
+    quarters=[]; let yq=startQ.split('-Q'); let y=+yq[0], q=+yq[1];
     while(true){ quarters.push(`${y}-Q${q}`); if(`${y}-Q${q}`===endQ) break; q++; if(q>4){ q=1; y++; } }
 
     // Quarter -> cumulative end index
@@ -239,5 +175,3 @@ playBtn.addEventListener('click',()=>{
   }catch(e){ console.error(e); alert("Error: "+(e.message||e)); }
 })();
 </script>
-</body>
-</html>
