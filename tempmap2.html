@@ -6,9 +6,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<!-- D3 + Leaflet Hexbin -->
-<script src="https://unpkg.com/d3@7"></script>
-<script src="https://unpkg.com/leaflet-d3-hexbin@0.2.2/leaflet.hexbin.js"></script>
+
+<!-- D3 + d3-hexbin (compatible versions) -->
+<script src="https://unpkg.com/d3@5/dist/d3.min.js"></script>
+<script src="https://unpkg.com/d3-hexbin@0.2.2/build/d3-hexbin.min.js"></script>
+
+<!-- Leaflet hexbin plugin (must come AFTER D3 and d3-hexbin) -->
+<script src="https://unpkg.com/leaflet-d3-hexbin@0.2.2/leaflet.hexbin.min.js"></script>
+
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 <style>
   :root { --blue:#008BB9; --lime:#E0E722; --ink:#111827; }
@@ -33,14 +38,20 @@
   .q-label { font-weight:800; letter-spacing:0.01em; font-size: clamp(18px,3.2vw,36px); color:#0c1f27; background:rgba(255,255,255,0.72);
     border:1px solid rgba(17,24,39,0.08); border-radius:12px; padding:6px 10px; box-shadow:0 6px 18px rgba(0,0,0,.06); backdrop-filter: blur(6px);
     user-select:none; pointer-events:none; white-space:nowrap; }
+  .warn { position:absolute; right:12px; top:12px; z-index:600; background:#fff3cd; border:1px solid #ffeeba; color:#856404; padding:8px 10px; border-radius:8px; }
 </style>
 </head>
 <body>
+  <div id="map"></div>
+
   <div class="hud">
     <div class="toolbar">
       <button id="playBtn" class="btn primary">▶</button>
       <div class="range-wrap"><input id="qSlider" class="range" type="range" min="0" max="0" step="1" value="0" /></div>
-      <select id="modeSel" title="Aggregation mode"><option value="cum" selected>Cumulative</option><option value="quarter">This quarter only</option></select>
+      <select id="modeSel" title="Aggregation mode">
+        <option value="cum" selected>Cumulative</option>
+        <option value="quarter">This quarter only</option>
+      </select>
       <select id="scaleSel" title="Colour scale">
         <option value="brand" selected>Brand (Blue→Lime)</option>
         <option value="blue">Blue</option>
@@ -52,12 +63,24 @@
     </div>
   </div>
 
-  <div id="map"></div>
   <div class="chip"><span id="totalCount">0</span> merchants • CSV <code>merchantmapoct25-dates.csv</code></div>
+
+  <div id="warnBox" class="warn" style="display:none;">Hexbin plugin didn’t load. Check the script order/versions.</div>
 
 <script>
 const CSV_PATH="merchantmapoct25-dates.csv";
 const COLS={ name:"MERCHANT_NAME", activity:"BUSINESS_ACTIVITY", date:"START_OF_MERCHANT_REPORTING", lat:"Latitude", lon:"Longitude" };
+
+// Check plugin presence early
+const warnBox = document.getElementById('warnBox');
+function ensurePlugin() {
+  if (!window.L || typeof L.hexbinLayer !== 'function') {
+    warnBox.style.display = 'block';
+    console.error('L.hexbinLayer is not available. Verify D3, d3-hexbin, and leaflet-d3-hexbin scripts loaded in that order.');
+    return false;
+  }
+  return true;
+}
 
 // Map
 const map=L.map('map',{preferCanvas:true}).setView([55.5,-3],5);
@@ -91,6 +114,7 @@ function makeColorScale(maxCount){
   return d3.scaleLinear().domain([0, maxCount*0.5, maxCount]).range(['#a8d5e3','#008BB9','#E0E722']).clamp(true);
 }
 function ensureHexLayer(maxCount){
+  if (!ensurePlugin()) return;
   const radius=parseInt(hexSize.value,10)||14;
   if(hexLayer){ map.removeLayer(hexLayer); }
   hexLayer=L.hexbinLayer({ radius, opacity:0.85, duration:150 })
@@ -103,6 +127,7 @@ function ensureHexLayer(maxCount){
 
 // Update (by quarter index)
 function setView(idx){
+  if (!ensurePlugin()) return;
   const q=quarters[idx]; setQText(qHuman(q));
   const end=qEnd[q]??-1;
   if(end<0){ totalEl.textContent="0"; if(hexLayer) hexLayer.data([]); return; }
@@ -115,8 +140,7 @@ function setView(idx){
   }
   totalEl.textContent=(modeSel.value==='cum'? (end+1) : data.length).toLocaleString();
 
-  // Re-build hex layer with domain matched to dataset size (keeps colours balanced)
-  ensureHexLayer(Math.max(1, data.length/50)); // heuristic: ~50 pts per bright hex
+  ensureHexLayer(Math.max(1, data.length/50)); // heuristic for colour scale
   hexLayer.data(data);
 }
 
@@ -167,9 +191,9 @@ playBtn.addEventListener('click',()=>{
     // Map quarter -> cumulative end index
     let j=0; qEnd={}; for(const Q of quarters){ while(j<points.length && points[j].q<=Q) j++; qEnd[Q]=j-1; }
 
-    slider.min=0; slider.max=Math.max(0,quarters.length-1); slider.value=slider.max;
-    // Prime hex layer and view
+    // Prime and show
     ensureHexLayer(100);
+    slider.min=0; slider.max=Math.max(0,quarters.length-1); slider.value=slider.max;
     setView(+slider.value);
     fit();
   }catch(e){ console.error(e); alert("Error: "+(e.message||e)); }
