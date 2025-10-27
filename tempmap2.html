@@ -2,80 +2,140 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Teya Growth Map — Merchants over time</title>
+  <title>Teya Growth Map — Professional Heatmap</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-  <!-- Heatmap + Clusters -->
+  <!-- Heatmap -->
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
-  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
   <!-- Papa Parse -->
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
   <style>
-    :root { --blue:#008BB9; --lime:#E0E722; }
-    html, body { height:100%; margin:0; }
-    body { font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+    :root { --blue:#008BB9; --lime:#E0E722; --ink:#111827; }
+    html, body { height:100%; margin:0; background:#fff; }
+    body { font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; color:var(--ink); }
     #map { position:absolute; inset:0; }
-    .panel {
+
+    /* --- Compact HUD --- */
+    .hud {
       position:absolute; left:12px; top:12px; z-index:500;
-      background:#fff; border:1px solid #ddd; border-radius:10px;
-      padding:10px 12px; box-shadow:0 6px 20px rgba(0,0,0,.08);
-      display:flex; flex-direction:column; gap:10px; min-width:340px;
+      display:flex; flex-direction:column; gap:6px;
     }
-    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    .count { margin-left:auto; font-variant-numeric:tabular-nums; font-weight:600; }
-    .slider { width:100%; display:grid; grid-template-columns:1fr 72px; gap:8px; align-items:center; }
-    input[type=range]{ width:100%; }
-    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    button, select{ padding:6px 10px; border:1px solid #ccc; border-radius:8px; background:#fff; cursor:pointer; }
-    button:disabled{ opacity:.6; cursor:not-allowed; }
-    .note{ color:#666; font-size:12px; }
-    .warn{ color:#b00020; font-weight:600; }
+    /* Month badge (subtle, professional) */
+    .badge {
+      background: rgba(255,255,255,0.75);
+      border:1px solid rgba(17,24,39,0.08);
+      backdrop-filter: blur(6px);
+      border-radius:12px;
+      padding:6px 10px;
+      font-weight:700; letter-spacing:.02em;
+      box-shadow:0 6px 18px rgba(0,0,0,.06);
+      max-width: 60vw;
+      display:flex; align-items:center; gap:10px;
+    }
+    .badge .dot { width:8px; height:8px; border-radius:999px; background:#008BB9; opacity:.8; }
+    .badge .text { font-size: clamp(14px, 2.6vw, 18px); }
+
+    /* Toolbar: ultra compact controls */
+    .toolbar {
+      background: rgba(255,255,255,0.75);
+      border:1px solid rgba(17,24,39,0.08);
+      backdrop-filter: blur(6px);
+      border-radius:10px;
+      padding:6px 8px;
+      box-shadow:0 6px 18px rgba(0,0,0,.06);
+      display:flex; align-items:center; gap:8px;
+    }
+    .btn, select, input[type=number] {
+      appearance:none; -webkit-appearance:none;
+      font:inherit;
+      padding:4px 8px;
+      border:1px solid #d1d5db;
+      border-radius:8px;
+      background:#fff;
+      line-height:1.1;
+      height:26px;
+      cursor:pointer;
+    }
+    .btn { padding:4px 10px; }
+    .btn.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    .num { width:3.5rem; }
+
+    /* Micro slider */
+    .range-wrap { display:flex; align-items:center; gap:8px; min-width:220px; }
+    .range {
+      -webkit-appearance:none; appearance:none; width:100%; height:4px; border-radius:999px;
+      background:#e5e7eb; outline:none;
+    }
+    .range::-webkit-slider-thumb {
+      -webkit-appearance:none; appearance:none; width:14px; height:14px; border-radius:50%;
+      background:var(--blue); border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.25);
+      cursor:pointer; margin-top:-5px;
+    }
+    .range::-moz-range-thumb {
+      width:14px; height:14px; border-radius:50%;
+      background:var(--blue); border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.25);
+      cursor:pointer;
+    }
+
+    /* Tiny info chip (bottom-left) */
+    .chip {
+      position:absolute; left:12px; bottom:12px; z-index:500;
+      background:rgba(255,255,255,0.75);
+      border:1px solid rgba(17,24,39,0.08);
+      border-radius:999px;
+      padding:4px 8px;
+      font-variant-numeric: tabular-nums;
+      box-shadow:0 6px 18px rgba(0,0,0,.06);
+    }
+    .chip code { background:transparent; padding:0; }
   </style>
 </head>
 <body>
+  <!-- Compact HUD -->
+  <div class="hud">
+    <div class="badge">
+      <div class="dot"></div>
+      <div id="monthBadge" class="text">—</div>
+    </div>
+
+    <div class="toolbar">
+      <button id="playBtn" class="btn primary" title="Play/Pause">▶</button>
+      <div class="range-wrap">
+        <input id="monthSlider" class="range" type="range" min="0" max="0" step="1" value="0" />
+      </div>
+      <select id="paletteSel" title="Palette">
+        <option value="teyaSoft" selected>Soft</option>
+        <option value="teya">Blue→Lime</option>
+        <option value="teyaBlue">Blue</option>
+      </select>
+      <label title="Heat radius">R
+        <input id="radiusInp" class="num" type="number" min="6" max="40" step="1" value="18">
+      </label>
+      <label title="Heat blur">B
+        <input id="blurInp" class="num" type="number" min="4" max="40" step="1" value="15">
+      </label>
+      <button id="fitBtn" class="btn" title="Fit to data">Fit</button>
+    </div>
+  </div>
+
+  <!-- Map -->
   <div id="map"></div>
 
-  <div class="panel">
-    <div class="row">
-      <strong>Teya growth by month</strong>
-      <span class="count" id="totalCount">0</span>
-    </div>
-
-    <div class="row">
-      <button id="playBtn">▶ Play</button>
-      <select id="modeSel">
-        <option value="heat" selected>Heatmap (fast)</option>
-        <option value="cluster">Marker clusters</option>
-      </select>
-      <button id="fitBtn">Fit</button>
-    </div>
-
-    <div class="slider">
-      <input id="monthSlider" type="range" min="0" max="0" step="1" value="0">
-      <div>
-        <div id="monthLabel" class="mono">—</div>
-        <div id="rangeLabel" class="note">—</div>
-      </div>
-    </div>
-
-    <div class="note">
-      CSV: <span class="mono" id="csvName">merchantmapoct25-dates.csv</span>
-      <span id="status" class="count">Loading…</span>
-    </div>
-    <div class="note" id="debugNote"></div>
+  <!-- Bottom-left tiny status -->
+  <div class="chip">
+    <span id="totalCount">0</span> merchants • CSV <code>merchantmapoct25-dates.csv</code>
   </div>
 
 <script>
-/* === CONFIG (uses your exact headers) === */
-const CSV_PATH = "merchantmapoct25-dates.csv"; // same folder as this HTML
+/* === CSV CONFIG === */
+const CSV_PATH = "merchantmapoct25-dates.csv";
 const COLS = {
   name: "MERCHANT_NAME",
   activity: "BUSINESS_ACTIVITY",
@@ -84,127 +144,131 @@ const COLS = {
   lon: "Longitude"
 };
 
-/* === MAP === */
+/* === Brand gradients === */
+const TEYA_BLUE = '#008BB9';
+const TEYA_LIME = '#E0E722';
+const GRADIENTS = {
+  teya: {
+    0.00: 'rgba(0,139,185,0)',
+    0.20: 'rgba(0,139,185,0.25)',
+    0.40: 'rgba(0,139,185,0.55)',
+    0.65: TEYA_BLUE,
+    0.85: '#c8d40f',
+    1.00: TEYA_LIME
+  },
+  teyaBlue: {
+    0.00: 'rgba(0,139,185,0)',
+    0.25: 'rgba(0,139,185,0.35)',
+    0.50: 'rgba(0,139,185,0.65)',
+    0.75: TEYA_BLUE,
+    1.00: '#005f7e'
+  },
+  teyaSoft: {
+    0.00: 'rgba(0,139,185,0)',
+    0.30: 'rgba(0,139,185,0.18)',
+    0.55: 'rgba(0,139,185,0.38)',
+    0.78: 'rgba(224,231,34,0.58)',
+    1.00: TEYA_LIME
+  }
+};
+
+/* === MAP (Carto light, no labels) === */
 const map = L.map('map', { preferCanvas:true }).setView([51.5, -0.1], 5);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(map);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+  maxZoom: 19, attribution: '&copy; OSM & CARTO'
+}).addTo(map);
 
-const statusEl = document.getElementById('status');
-const debugEl  = document.getElementById('debugNote');
-const totalEl  = document.getElementById('totalCount');
-const slider   = document.getElementById('monthSlider');
-const monthLab = document.getElementById('monthLabel');
-const rangeLab = document.getElementById('rangeLabel');
-const playBtn  = document.getElementById('playBtn');
-const modeSel  = document.getElementById('modeSel');
-const fitBtn   = document.getElementById('fitBtn');
+/* UI refs */
+const playBtn   = document.getElementById('playBtn');
+const fitBtn    = document.getElementById('fitBtn');
+const slider    = document.getElementById('monthSlider');
+const paletteSel= document.getElementById('paletteSel');
+const radiusInp = document.getElementById('radiusInp');
+const blurInp   = document.getElementById('blurInp');
+const totalEl   = document.getElementById('totalCount');
+const monthBadge= document.getElementById('monthBadge');
 
-let points = [];     // [{lat,lon,date,ym,name,activity}]
-let months = [];     // ['YYYY-MM', ...]
-let monthEnd = {};   // map ym -> cumulative end index
-let heatLayer = null, clusterLayer = null, playTimer = null;
+/* State */
+let points=[], months=[], monthEnd={};
+let heatLayer=null, playTimer=null;
 
-/* === Helpers === */
+/* Helpers */
 const fmtYM = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+function humanYM(ym){ if(!ym) return "—"; const [y,m]=ym.split('-'); const d=new Date(+y, +m-1, 1); return d.toLocaleString(undefined,{ month:'long', year:'numeric' }); }
 function parseUK(s){
-  // dd/mm/yyyy
   const m = String(s||"").match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (m) return new Date(+m[3], +m[2]-1, +m[1]);
-  const d = new Date(s); // fallback
-  return isNaN(d) ? null : d;
+  const d = new Date(s); return isNaN(d) ? null : d;
 }
-function updateLabels(idx){
-  const ym = months[idx] || "—";
-  monthLab.textContent = ym;
-  if (months.length) rangeLab.textContent = `${months[0]} → ${months[months.length-1]}`;
-}
-function ensureHeat(){
-  if (!heatLayer) heatLayer = L.heatLayer([], { radius:18, blur:15, maxZoom:12 });
-  if (!map.hasLayer(heatLayer)) map.addLayer(heatLayer);
-  if (clusterLayer && map.hasLayer(clusterLayer)) map.removeLayer(clusterLayer);
-}
-function ensureClusters(){
-  if (!clusterLayer) clusterLayer = L.markerClusterGroup({ chunkedLoading:true });
-  else clusterLayer.clearLayers();
-  if (!map.hasLayer(clusterLayer)) map.addLayer(clusterLayer);
-  if (heatLayer && map.hasLayer(heatLayer)) map.removeLayer(heatLayer);
+function ensureHeatLayer() {
+  const radius = Math.max(6, Math.min(40, parseInt(radiusInp.value,10) || 18));
+  const blur   = Math.max(4, Math.min(40, parseInt(blurInp.value,10) || 15));
+  const gradient = GRADIENTS[paletteSel.value] || GRADIENTS.teyaSoft;
+  if (!heatLayer) {
+    heatLayer = L.heatLayer([], { radius, blur, maxZoom: 12, max: 1.0, gradient }).addTo(map);
+  } else {
+    heatLayer.setOptions({ radius, blur, gradient });
+    heatLayer.setLatLngs(heatLayer._latlngs || []);
+  }
 }
 function setView(idx){
-  const ym = months[idx], end = monthEnd[ym] ?? -1;
-  if (end < 0){ if (heatLayer) heatLayer.setLatLngs([]); if (clusterLayer) clusterLayer.clearLayers(); totalEl.textContent = "0"; return; }
+  const ym = months[idx]; const end = monthEnd[ym] ?? -1;
+  if (end < 0){ totalEl.textContent="0"; if (heatLayer) heatLayer.setLatLngs([]); monthBadge.textContent=humanYM(ym); return; }
   const cum = points.slice(0, end+1);
   totalEl.textContent = cum.length.toLocaleString();
-
-  if (map.hasLayer(heatLayer)){
-    const last = end;
-    heatLayer.setLatLngs(cum.map((p,i)=>[p.lat, p.lon, 0.6 + 0.4*(i/Math.max(1,last))]));
-  } else if (map.hasLayer(clusterLayer)){
-    clusterLayer.clearLayers();
-    const MAX = 50000;
-    const use = cum.slice(-MAX);
-    clusterLayer.addLayers(use.map(p => L.marker([p.lat,p.lon]).bindTooltip(
-      `<strong>${p.name||""}</strong><br>${p.activity||""}<br><span class="mono">${p.ym}</span>`, {direction:'top'}
-    )));
-  }
+  monthBadge.textContent = humanYM(ym);
+  const last = end;
+  const heatPts = cum.map((p,i)=>[p.lat, p.lon, 0.6 + 0.4*(i/Math.max(1,last))]); // 0.6..1.0
+  heatLayer.setLatLngs(heatPts);
 }
 function fit(){
   if (!points.length) return;
-  const lats = points.map(p=>p.lat), lons = points.map(p=>p.lon);
-  map.fitBounds([[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]], { padding:[30,30] });
+  const lats=points.map(p=>p.lat), lons=points.map(p=>p.lon);
+  map.fitBounds([[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]], { padding:[24,24] });
 }
 
-/* === UI === */
-slider.addEventListener('input', ()=>{ const i=+slider.value; updateLabels(i); setView(i); });
-modeSel.addEventListener('change', ()=>{ (modeSel.value==='heat')?ensureHeat():ensureClusters(); setView(+slider.value); });
-playBtn.addEventListener('click', ()=>{
-  if (playTimer){ clearInterval(playTimer); playTimer=null; playBtn.textContent="▶ Play"; return; }
-  playBtn.textContent="⏸ Pause";
-  playTimer = setInterval(()=>{
-    let i=+slider.value; if (i>=+slider.max){ clearInterval(playTimer); playTimer=null; playBtn.textContent="▶ Play"; return; }
-    slider.value=i+1; slider.dispatchEvent(new Event('input'));
-  }, 600);
-});
+/* UI events */
+slider.addEventListener('input', ()=> setView(+slider.value));
+paletteSel.addEventListener('change', ensureHeatLayer);
+radiusInp.addEventListener('change', ensureHeatLayer);
+blurInp.addEventListener('change', ensureHeatLayer);
 fitBtn.addEventListener('click', fit);
+playBtn.addEventListener('click', ()=>{
+  if (playTimer){ clearInterval(playTimer); playTimer=null; playBtn.textContent="▶"; return; }
+  playBtn.textContent="⏸";
+  playTimer = setInterval(()=>{
+    let i=+slider.value;
+    if (i>=+slider.max){ clearInterval(playTimer); playTimer=null; playBtn.textContent="▶"; return; }
+    slider.value=i+1; slider.dispatchEvent(new Event('input'));
+  }, 300); // faster playback
+});
 
-/* === Fetch, then parse === */
-(async function load(){
+/* Load CSV */
+(async function(){
   try {
-    statusEl.textContent = "Downloading CSV…";
     const res = await fetch(CSV_PATH + "?t=" + Date.now(), { cache: "no-store" });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const text = await res.text();
-
-    statusEl.textContent = "Parsing CSV…";
-    const parsed = Papa.parse(text, {
-      header: true,
-      skipEmptyLines: true,
-      delimitersToGuess: [",", ";", "\t", "|"]
-    });
+    const parsed = Papa.parse(text, { header:true, skipEmptyLines:true, delimitersToGuess:[",",";","\t","|"] });
 
     const headers = parsed.meta?.fields || (parsed.data[0] ? Object.keys(parsed.data[0]) : []);
-    debugEl.innerHTML = "Headers: " + headers.map(h=>`<code>${h}</code>`).join(", ");
-
     const required = [COLS.lon, COLS.lat, COLS.date];
-    const missing = required.filter(h => !headers.includes(h));
-    if (missing.length){
-      statusEl.textContent = "Expected columns not found in CSV.";
-      debugEl.innerHTML += ` <span class="warn">| Missing expected: ${missing.join(", ")}</span>`;
-      return;
-    }
+    if (required.some(h => !headers.includes(h))) { alert("Expected columns not found in CSV."); return; }
 
-    const raw = [];
-    for (const row of parsed.data){
+    const rows=[];
+    for (const row of parsed.data) {
       const lat = parseFloat(String(row[COLS.lat]).replace(",", "."));
       const lon = parseFloat(String(row[COLS.lon]).replace(",", "."));
       if (!isFinite(lat) || !isFinite(lon)) continue;
       const d = parseUK(row[COLS.date]); if (!d) continue;
-      raw.push({ lat, lon, date:d, ym:fmtYM(d), name:row[COLS.name]||"", activity:row[COLS.activity]||"" });
+      rows.push({ lat, lon, date:d, ym:fmtYM(d) });
     }
-    if (!raw.length){ statusEl.textContent = "No valid rows with coords + date."; return; }
+    if (!rows.length) { alert("No valid rows with coordinates + date."); return; }
 
-    raw.sort((a,b)=>a.date-b.date);
-    points = raw;
+    rows.sort((a,b)=>a.date-b.date);
+    points = rows;
 
-    // Build month index
+    // Build months
     const start = new Date(points[0].date.getFullYear(), points[0].date.getMonth(), 1);
     const end   = new Date();
     months = [];
@@ -213,16 +277,14 @@ fitBtn.addEventListener('click', fit);
     let j=0; monthEnd={};
     for (const ym of months){ while (j<points.length && points[j].ym <= ym) j++; monthEnd[ym]=j-1; }
 
-    // Init UI
+    // Init UI + map
     slider.min = 0; slider.max = Math.max(0, months.length-1); slider.value = slider.max;
-    updateLabels(+slider.value);
-    ensureHeat();
+    ensureHeatLayer();
     setView(+slider.value);
     fit();
-
-    statusEl.textContent = `Loaded ${points.length.toLocaleString()} merchants across ${months.length} months`;
-  } catch (e){
-    statusEl.textContent = "Error: " + (e.message || e);
+  } catch (e) {
+    console.error(e);
+    alert("Error: " + (e.message || e));
   }
 })();
 </script>
