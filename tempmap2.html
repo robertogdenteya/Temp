@@ -156,7 +156,10 @@ function renderHexes(latlngs){
   const bins = hexbin(projected);
 
   // Colour scales (stronger lime by default)
-  const maxCount = d3.max(bins, b=>b.length) || 1;
+  let maxCount = d3.max(bins, b=>b.length) || 1;
+
+// Avoid overly dark colours when data are sparse
+if (maxCount < 3) maxCount = 3;
   const color = (scaleSel.value === 'blue')
     ? d3.scaleSequential(d3.interpolateGnBu).domain([0, maxCount])
     : d3.scaleLinear()
