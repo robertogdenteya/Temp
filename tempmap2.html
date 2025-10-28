@@ -110,6 +110,22 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png
   maxZoom: 19, attribution: '&copy; OSM & CARTO'
 }).addTo(map);
 
+// --- Add a pane for labels so they don't block interactions ---
+map.createPane('labels');
+map.getPane('labels').style.pointerEvents = 'none';
+map.getPane('labels').style.zIndex = 650; // above hexes and base map
+
+// --- Add a labels-only tile layer (country & city names) ---
+const labelsOnly = L.tileLayer(
+  'https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png',
+  {
+    pane: 'labels',
+    maxZoom: 19,
+    opacity: 0.95,
+    attribution: '&copy; OSM & CARTO'
+  }
+).addTo(map);
+
 /* Use Leaflet's own SVG renderer (fixes clipping on zoom/pan) */
 const leafletSvg = L.svg({ padding: 0.75 }).addTo(map); // padding adds overscan so edges aren't clipped
 const svg = d3.select(leafletSvg._container);           // Leaflet-managed <svg>
