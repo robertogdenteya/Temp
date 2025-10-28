@@ -161,7 +161,7 @@ function renderHexes(latlngs){
     ? d3.scaleSequential(d3.interpolateGnBu).domain([0, maxCount])
     : d3.scaleLinear()
         .domain([0, maxCount*0.5, maxCount])
-        .range(['#EBEC91', '#E0E722', '#D4D72C']) // lighter start -> brand lime -> deeper lime
+        .range(['#f1f3b6', '#E0E722', '#D4D72C']) // lighter start -> brand lime -> deeper lime
         .clamp(true);
 
   // JOIN
