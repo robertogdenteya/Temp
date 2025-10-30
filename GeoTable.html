@@ -68,11 +68,11 @@ const START_INDEX = null;   // 0-based row index; set to a number to start by ro
 
 /* ===================== COLUMNS ===================== */
 const COLS = {
-  id: "ID",
+  id: "MERCHANT_ID",
   name: "MERCHANT_NAME",
-  street: "address.street",
-  city: "address.CITY",   // note: CITY and ZIP are upper-case in your CSV
-  zip: "address.ZIP",
+  street: "MERCHANT_ADDRESS_LINE_1",
+  city: "MERCHANT_CITY",   // note: CITY and ZIP are upper-case in your CSV
+  zip: "MERCHANT_ZIP",
   countryA3: "MERCHANT_COUNTRY"
 };
 
@@ -141,7 +141,7 @@ function renderTable() {
   downloadBtn.disabled = records.length === 0;
 }
 function toCsv() {
-  const lines = ["ID,MERCHANT_NAME,Longitude,Latitude"];
+  const lines = ["MERCHANT_ID,MERCHANT_NAME,Longitude,Latitude"];
   for (const r of records) {
     const vals = [
       r[COLS.id] || "",
