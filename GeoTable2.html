@@ -9,6 +9,7 @@
     header { padding:12px 16px; border-bottom:1px solid #ddd; display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
     h1 { margin:0; font-size:18px; }
     .badge { font-size:12px; background:#f3f4f6; border:1px solid #e5e7eb; padding:4px 8px; border-radius:999px; }
+    .diag { margin:10px 16px; padding:8px 10px; border:1px solid #dbeafe; background:#eff6ff; color:#1e3a8a; border-radius:8px; font-size:12px; }
     .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid #ddd; }
     button { padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#fff; cursor:pointer; }
     button:disabled { opacity:.6; cursor:not-allowed; }
@@ -20,7 +21,6 @@
     th { background:#fafafa; position:sticky; top:0; text-align:left; }
     code { background:#f3f4f6; padding:1px 4px; border-radius:4px; }
   </style>
-  <!-- Papa Parse -->
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 </head>
 <body>
@@ -29,6 +29,8 @@
   <div>CSV: <code>active_merchants_Oct_2025.csv</code></div>
   <div id="sliceBadge" class="badge" title="This tab's assigned slice"></div>
 </header>
+
+<div id="diag" class="diag" style="display:none;"></div>
 
 <div class="bar">
   <button id="copyBtn" disabled>Copy table</button>
@@ -59,8 +61,8 @@
 
 <script>
 /* ====== CONFIG ====== */
-const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa";  // your key
-const CSV_PATH = "active_merchants_Oct_2025.csv";            // NEW file name
+const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa";
+const CSV_PATH = "active_merchants_Oct_2025.csv";
 
 /* Column names (case-sensitive) */
 const COLS = {
@@ -87,6 +89,7 @@ const downloadBtn = document.getElementById("downloadBtn");
 const statusEl = document.getElementById("status");
 const concurrencySel = document.getElementById("concurrency");
 const sliceBadge = document.getElementById("sliceBadge");
+const diagBox = document.getElementById("diag");
 
 /* ====== Data + cache ====== */
 const records = [];
@@ -191,15 +194,6 @@ async function geocode(addr, a3) {
 }
 
 /* ====== Partitioning (Modulo by URL) ====== */
-/*
-Open multiple tabs with:
-  ?part=0&of=3
-  ?part=1&of=3
-  ?part=2&of=3
-Also supported (optional):
-  ?start_index=65000&end_index=79999
-  ?start_id=65000&end_id=79999   (IDs must be numeric if you use this)
-*/
 function num(v, d=null){ const n = Number(v); return Number.isFinite(n) ? n : d; }
 const params = new URLSearchParams(location.search);
 const PART = num(params.get('part')); // 0-based
@@ -209,8 +203,8 @@ const END_INDEX   = num(params.get('end_index'));
 const START_ID    = num(params.get('start_id'));
 const END_ID      = num(params.get('end_id'));
 
-/* ====== UI: copy / download ====== */
-let activeRows = []; // rows this tab processes (subset)
+/* UI: copy / download */
+let activeRows = [];
 copyBtn.onclick = async ()=>{
   await navigator.clipboard.writeText(toCsv(activeRows));
   copyBtn.textContent = "Copied!";
@@ -228,18 +222,35 @@ downloadBtn.onclick = ()=>{
 fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
   .then(r=>{ if(!r.ok) throw new Error(`CSV fetch failed: ${r.status}`); return r.text(); })
   .then(text=>{
+    // Keep a tiny preview for diagnostics if parsing fails
+    const preview = text.slice(0, 250).replace(/\n/g, "\\n");
     Papa.parse(text, {
       header:true,
       skipEmptyLines:true,
+      delimitersToGuess:[",",";","\t","|"],
       complete: ({ data, meta }) => {
-        // Normalise headers and validate
         const rawFields = meta?.fields || Object.keys(data[0] || {});
-        const fields = rawFields.map(h => (h||"").trim());
+        // normalise header names, trim BOM
+        const fields = rawFields.map(h => (h||"").replace(/^\uFEFF/, "").trim());
         const needed = [COLS.id, COLS.name, COLS.street, COLS.city, COLS.zip, COLS.countryA3];
         const missing = needed.filter(h => !fields.includes(h));
+
+        // Diagnostics banner
+        diagBox.style.display = "block";
+        diagBox.innerHTML = `
+          <strong>Diagnostics</strong> — rows parsed: <b>${data.length.toLocaleString()}</b> •
+          headers found: <code>${fields.join(", ")||"(none)"} </code><br/>
+          delimiter guessed: <code>${meta?.delimiter||"unknown"}</code> •
+          preview: <code>${preview}</code>
+        `;
+
         if (missing.length) {
-          statusEl.textContent = `Error: Missing header(s): ${missing.join(", ")}. Found: ${fields.join(", ")}`;
+          statusEl.textContent = `Error: Missing header(s): ${missing.join(", ")}`;
           console.error("Headers found:", fields);
+          return;
+        }
+        if (!data.length) {
+          statusEl.textContent = "Error: Parsed 0 data rows. Check delimiter/line endings/encoding.";
           return;
         }
 
@@ -260,11 +271,10 @@ fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
         // Partition indices
         let idxs = records.map((_, i) => i);
 
-        // Optional ID range filter (only enforce numeric if range provided)
+        // Optional ID range filter (numeric only if range provided)
         if (START_ID != null || END_ID != null) {
           idxs = idxs.filter(i => {
-            const rawId = records[i][COLS.id];
-            const idVal = Number(rawId);
+            const idVal = Number(records[i][COLS.id]);
             if (!Number.isFinite(idVal)) return false;
             if (START_ID != null && idVal < START_ID) return false;
             if (END_ID   != null && idVal > END_ID)   return false;
@@ -294,7 +304,7 @@ fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
         // Build subset rows
         activeRows = idxs.map(i => records[i]);
 
-        // Optional: skip already-cached addresses (avoid duplicate work across tabs)
+        // Skip already-cached addresses (avoid duplicate work across tabs)
         const filtered = activeRows.filter(r => {
           const key = (buildAddress(r).toLowerCase() + '|' + alpha3To2((r[COLS.countryA3]||'').toUpperCase()));
           return !geocodeCache.has(key);
@@ -303,7 +313,7 @@ fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
         // Render initial table
         renderTable(activeRows);
 
-        // Build geocoding tasks over filtered subset
+        // Build geocoding tasks
         const tasks = filtered.map((r, idx) => async ()=>{
           const addr = buildAddress(r);
           const c = (r[COLS.countryA3]||"").trim().toUpperCase();
@@ -324,6 +334,9 @@ fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
           renderTable(activeRows);
           statusEl.textContent = `Done: ${activeRows.filter(x=>x.lat&&x.lon).length}/${activeRows.length} geocoded`;
         });
+      },
+      error: (err) => {
+        statusEl.textContent = "Parse error: " + (err?.message || err);
       }
     });
   })
