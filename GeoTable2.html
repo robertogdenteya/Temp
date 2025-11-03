@@ -46,7 +46,7 @@
     <table id="dataTable">
       <thead>
         <tr>
-          <th>ID</th>
+          <th>MERCHANT_ID</th>
           <th>MERCHANT_NAME</th>
           <th>Longitude</th>
           <th>Latitude</th>
@@ -60,14 +60,14 @@
 <script>
 /* ====== CONFIG ====== */
 const GEOAPIFY_KEY = "994b9182b34b40378d2116c40baa4faa";  // your key
-const CSV_PATH = "active_merchants_Oct_2025.csv";
+const CSV_PATH = "active_merchants_Oct_2025.csv";            // NEW file name
 
-/* Column names (case-sensitive to match your CSV) */
+/* Column names (case-sensitive) */
 const COLS = {
   id: "MERCHANT_ID",
   name: "MERCHANT_NAME",
   street: "MERCHANT_ADDRESS_LINE_1",
-  city: "MERCHANT_CITY",   // note: CITY and ZIP are upper-case in your CSV
+  city: "MERCHANT_CITY",
   zip: "MERCHANT_ZIP",
   countryA3: "MERCHANT_COUNTRY"
 };
@@ -98,7 +98,9 @@ function loadCache() {
   } catch {}
 }
 function saveCache() {
-  localStorage.setItem("geo_cache_minimal", JSON.stringify(Object.fromEntries(geocodeCache)));
+  try {
+    localStorage.setItem("geo_cache_minimal", JSON.stringify(Object.fromEntries(geocodeCache)));
+  } catch {}
 }
 loadCache();
 
@@ -115,7 +117,7 @@ function alpha3To2(a3) {
   return A3_TO_A2[String(a3||"").trim().toUpperCase()] || "";
 }
 function toCsv(rows) {
-  const lines = ["ID,MERCHANT_NAME,Longitude,Latitude"];
+  const lines = ["MERCHANT_ID,MERCHANT_NAME,Longitude,Latitude"];
   for (const r of rows) {
     const vals = [
       r[COLS.id]||"",
@@ -190,14 +192,13 @@ async function geocode(addr, a3) {
 
 /* ====== Partitioning (Modulo by URL) ====== */
 /*
-Usage in address bar:
-  ?part=0&of=3   (three tabs)
+Open multiple tabs with:
+  ?part=0&of=3
   ?part=1&of=3
   ?part=2&of=3
-Optionally you can also use:
+Also supported (optional):
   ?start_index=65000&end_index=79999
-  ?start_id=65000&end_id=79999
-(Those are supported but modulo is the default/primary approach.)
+  ?start_id=65000&end_id=79999   (IDs must be numeric if you use this)
 */
 function num(v, d=null){ const n = Number(v); return Number.isFinite(n) ? n : d; }
 const params = new URLSearchParams(location.search);
@@ -209,6 +210,7 @@ const START_ID    = num(params.get('start_id'));
 const END_ID      = num(params.get('end_id'));
 
 /* ====== UI: copy / download ====== */
+let activeRows = []; // rows this tab processes (subset)
 copyBtn.onclick = async ()=>{
   await navigator.clipboard.writeText(toCsv(activeRows));
   copyBtn.textContent = "Copied!";
@@ -223,36 +225,33 @@ downloadBtn.onclick = ()=>{
 };
 
 /* ====== Main load ====== */
-let activeRows = []; // rows this tab will process (subset)
-
-fetch(CSV_PATH + "?t=" + Date.now(), { cache: "no-store" })
+fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
   .then(r=>{ if(!r.ok) throw new Error(`CSV fetch failed: ${r.status}`); return r.text(); })
   .then(text=>{
     Papa.parse(text, {
       header:true,
       skipEmptyLines:true,
       complete: ({ data, meta }) => {
+        // Normalise headers and validate
         const rawFields = meta?.fields || Object.keys(data[0] || {});
-const fields = rawFields.map(h => (h || "").trim());  // normalize
-
-const needed = [COLS.id, COLS.name, COLS.street, COLS.city, COLS.zip, COLS.countryA3];
-const missing = needed.filter(h => !fields.includes(h));
-
-if (missing.length) {
-  statusEl.textContent = `Error: Missing required header(s): ${missing.join(", ")}. Found: ${fields.join(", ")}`;
-  console.error("Headers found:", fields);
-  return;
-}
+        const fields = rawFields.map(h => (h||"").trim());
+        const needed = [COLS.id, COLS.name, COLS.street, COLS.city, COLS.zip, COLS.countryA3];
+        const missing = needed.filter(h => !fields.includes(h));
+        if (missing.length) {
+          statusEl.textContent = `Error: Missing header(s): ${missing.join(", ")}. Found: ${fields.join(", ")}`;
+          console.error("Headers found:", fields);
+          return;
+        }
 
         // Build master records
         for (const row of data) {
           records.push({
-            [COLS.id]: row[COLS.id] || "",
-            [COLS.name]: row[COLS.name] || "",
-            [COLS.street]: row[COLS.street] || "",
-            [COLS.city]: row[COLS.city] || "",
-            [COLS.zip]: row[COLS.zip] || "",
-            [COLS.countryA3]: row[COLS.countryA3] || "",
+            [COLS.id]: (row[COLS.id]||"").toString().trim(),
+            [COLS.name]: (row[COLS.name]||"").toString().trim(),
+            [COLS.street]: (row[COLS.street]||"").toString().trim(),
+            [COLS.city]: (row[COLS.city]||"").toString().trim(),
+            [COLS.zip]: (row[COLS.zip]||"").toString().trim(),
+            [COLS.countryA3]: (row[COLS.countryA3]||"").toString().trim(),
             lat: "",
             lon: ""
           });
@@ -261,10 +260,11 @@ if (missing.length) {
         // Partition indices
         let idxs = records.map((_, i) => i);
 
-        // Optional ID range filter
+        // Optional ID range filter (only enforce numeric if range provided)
         if (START_ID != null || END_ID != null) {
           idxs = idxs.filter(i => {
-            const idVal = Number(records[i][COLS.id]);
+            const rawId = records[i][COLS.id];
+            const idVal = Number(rawId);
             if (!Number.isFinite(idVal)) return false;
             if (START_ID != null && idVal < START_ID) return false;
             if (END_ID   != null && idVal > END_ID)   return false;
@@ -272,14 +272,14 @@ if (missing.length) {
           });
         }
 
-        // Optional index range filter
+        // Optional index range filter (inclusive)
         if (START_INDEX != null || END_INDEX != null) {
           const si = START_INDEX ?? 0;
           const ei = END_INDEX ?? (records.length - 1);
           idxs = idxs.filter(i => i >= si && i <= ei);
         }
 
-        // Modulo split (primary approach)
+        // Modulo split (primary)
         if (PART != null && OF != null && OF > 1 && PART >= 0 && PART < OF) {
           idxs = idxs.filter(i => (i % OF) === PART);
           sliceBadge.textContent = `Slice: part ${PART+1} of ${OF} (modulo) • ${idxs.length.toLocaleString()} rows`;
@@ -294,16 +294,16 @@ if (missing.length) {
         // Build subset rows
         activeRows = idxs.map(i => records[i]);
 
-        // Optional: skip already-cached addresses to avoid duplicate work across tabs
+        // Optional: skip already-cached addresses (avoid duplicate work across tabs)
         const filtered = activeRows.filter(r => {
           const key = (buildAddress(r).toLowerCase() + '|' + alpha3To2((r[COLS.countryA3]||'').toUpperCase()));
           return !geocodeCache.has(key);
         });
 
-        // Render initial table (IDs & names show immediately)
+        // Render initial table
         renderTable(activeRows);
 
-        // Build tasks over filtered subset
+        // Build geocoding tasks over filtered subset
         const tasks = filtered.map((r, idx) => async ()=>{
           const addr = buildAddress(r);
           const c = (r[COLS.countryA3]||"").trim().toUpperCase();
