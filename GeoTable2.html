@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Teya Merchant Coordinates — Partitioned Geocoding (Debug)</title>
+<title>Teya Merchant Coordinates — Fast Geocoder (Modulo Slices)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
   body { margin:0; font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
@@ -27,7 +27,7 @@
 <header>
   <h1>Teya Merchant Coordinates</h1>
   <div>CSV: <code>active_merchants_Oct_2025.csv</code></div>
-  <div id="sliceBadge" class="badge" title="This tab's assigned slice"></div>
+  <div id="sliceBadge" class="badge" title="This tab's slice"></div>
 </header>
 
 <div id="diag" class="diag" style="display:none;"></div>
@@ -40,7 +40,7 @@
       <option>3</option><option selected>5</option><option>8</option><option>10</option>
     </select>
   </label>
-  <button id="resetFiltersBtn" title="Ignore URL filters and use FULL dataset">Use FULL slice</button>
+  <button id="fullBtn" title="Ignore URL params and use FULL dataset">Use FULL slice</button>
   <span class="status" id="status">Loading…</span>
 </div>
 
@@ -91,12 +91,13 @@ const statusEl = document.getElementById("status");
 const concurrencySel = document.getElementById("concurrency");
 const sliceBadge = document.getElementById("sliceBadge");
 const diagBox = document.getElementById("diag");
-const resetFiltersBtn = document.getElementById("resetFiltersBtn");
+const fullBtn = document.getElementById("fullBtn");
 
 /* ====== Data + cache ====== */
 const records = [];
-let activeRows = []; // rows this tab processes (subset)
+let activeRows = []; // this tab's subset
 const geocodeCache = new Map();
+
 function loadCache() {
   try {
     const raw = localStorage.getItem("geo_cache_minimal");
@@ -104,9 +105,7 @@ function loadCache() {
   } catch {}
 }
 function saveCache() {
-  try {
-    localStorage.setItem("geo_cache_minimal", JSON.stringify(Object.fromEntries(geocodeCache)));
-  } catch {}
+  try { localStorage.setItem("geo_cache_minimal", JSON.stringify(Object.fromEntries(geocodeCache))); } catch {}
 }
 loadCache();
 
@@ -119,18 +118,12 @@ function buildAddress(r) {
   ].filter(Boolean);
   return parts.join(", ");
 }
-function alpha3To2(a3) {
-  return A3_TO_A2[String(a3||"").trim().toUpperCase()] || "";
-}
+function alpha3To2(a3) { return A3_TO_A2[String(a3||"").trim().toUpperCase()] || ""; }
 function toCsv(rows) {
   const lines = ["MERCHANT_ID,MERCHANT_NAME,Longitude,Latitude"];
   for (const r of rows) {
-    const vals = [
-      r[COLS.id]||"",
-      r[COLS.name]||"",
-      r.lon ?? "",
-      r.lat ?? ""
-    ].map(v => `"${String(v).replace(/"/g,'""')}"`);
+    const vals = [r[COLS.id]||"", r[COLS.name]||"", r.lon ?? "", r.lat ?? ""]
+      .map(v => `"${String(v).replace(/"/g,'""')}"`);
     lines.push(vals.join(","));
   }
   return lines.join("\n");
@@ -151,32 +144,25 @@ function renderTable(rows) {
   copyBtn.disabled = rows.length===0;
   downloadBtn.disabled = rows.length===0;
 }
-
-/* Concurrency runner */
 async function withConcurrency(tasks, limit) {
-  const results = Array(tasks.length);
-  let i=0, active=0;
+  const results = Array(tasks.length); let i=0, active=0;
   return new Promise(resolve=>{
     const run=()=>{
       while(active<limit && i<tasks.length){
         const cur=i++; active++;
         tasks[cur]().then(r=>results[cur]=r).catch(e=>results[cur]=e).finally(()=>{
           active--;
-          if(i===tasks.length && active===0) resolve(results);
-          else run();
+          if(i===tasks.length && active===0) resolve(results); else run();
         });
       }
     };
     run();
   });
 }
-
-/* Geoapify geocode */
 async function geocode(addr, a3) {
   const a2 = alpha3To2(a3);
   const key = `${addr.toLowerCase()}|${a2}`;
   if (geocodeCache.has(key)) return geocodeCache.get(key);
-
   const url = new URL("https://api.geoapify.com/v1/geocode/search");
   url.searchParams.set("text", addr);
   url.searchParams.set("apiKey", GEOAPIFY_KEY);
@@ -196,33 +182,23 @@ async function geocode(addr, a3) {
   return out;
 }
 
-/* ====== Partitioning (Modulo by URL) ====== */
-function num(v, d=null){ const n = Number(v); return Number.isFinite(n) ? n : d; }
+/* ====== Partitioning ====== */
+/* Only modulo (& optional index range). No ID-based filtering. */
+function num(v, d=null){
+  if (v === null || v === undefined || v === "") return d; // treat empty as absent
+  const n = Number(v); return Number.isFinite(n) ? n : d;
+}
 function showDiag(html){ diagBox.style.display="block"; diagBox.innerHTML = html; }
 
 function applyPartitioning(records){
   const params = new URLSearchParams(location.search);
-  const PART = num(params.get('part'));
+  const PART = num(params.get('part')); // 0-based
   const OF   = num(params.get('of'));
   const START_INDEX = num(params.get('start_index'));
   const END_INDEX   = num(params.get('end_index'));
-  const START_ID    = num(params.get('start_id'));
-  const END_ID      = num(params.get('end_id'));
 
   let idxs = records.map((_, i) => i);
   const counts = { total: idxs.length };
-
-  // Optional ID range filter (only if range provided & IDs parse as numbers)
-  if (START_ID != null || END_ID != null) {
-    idxs = idxs.filter(i => {
-      const idVal = Number(records[i][COLS.id]);
-      if (!Number.isFinite(idVal)) return false;
-      if (START_ID != null && idVal < START_ID) return false;
-      if (END_ID   != null && idVal > END_ID)   return false;
-      return true;
-    });
-  }
-  counts.afterId = idxs.length;
 
   // Optional index range (inclusive)
   if (START_INDEX != null || END_INDEX != null) {
@@ -240,18 +216,16 @@ function applyPartitioning(records){
   }
   counts.afterModulo = idxs.length;
 
-  // Diagnostics message
+  // Diagnostics + badge
   const bits = [];
   bits.push(`<b>Total rows:</b> ${counts.total.toLocaleString()}`);
-  bits.push(`<b>After ID filter:</b> ${counts.afterId.toLocaleString()}`);
   bits.push(`<b>After index filter:</b> ${counts.afterIndex.toLocaleString()}`);
   bits.push(`<b>After modulo:</b> ${counts.afterModulo.toLocaleString()} ${moduloApplied ? `(part ${PART+1} of ${OF})` : ''}`);
   showDiag(bits.join(' • '));
 
-  // Badge text
   if (moduloApplied) {
     sliceBadge.textContent = `Slice: part ${PART+1} of ${OF} • ${idxs.length.toLocaleString()} rows`;
-  } else if (counts.afterIndex !== counts.total || counts.afterId !== counts.total) {
+  } else if (counts.afterIndex !== counts.total) {
     sliceBadge.textContent = `Slice: filtered • ${idxs.length.toLocaleString()} rows`;
   } else {
     sliceBadge.textContent = `Slice: FULL • ${idxs.length.toLocaleString()} rows`;
@@ -273,9 +247,8 @@ downloadBtn.onclick = ()=>{
   a.href = url; a.download = "merchant-coordinates.csv";
   a.click(); URL.revokeObjectURL(url);
 };
-resetFiltersBtn.onclick = ()=>{
-  // Strip all query params and reload to use FULL dataset
-  const url = location.origin + location.pathname;
+fullBtn.onclick = ()=>{
+  const url = location.origin + location.pathname; // strip all params
   location.assign(url);
 };
 
@@ -285,28 +258,22 @@ fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
   .then(text=>{
     const preview = text.slice(0, 250).replace(/\n/g, "\\n");
     Papa.parse(text, {
-      header:true,
-      skipEmptyLines:true,
-      delimitersToGuess:[",",";","\t","|"],
+      header:true, skipEmptyLines:true, delimitersToGuess:[",",";","\t","|"],
       complete: ({ data, meta }) => {
         const rawFields = meta?.fields || Object.keys(data[0] || {});
         const fields = rawFields.map(h => (h||"").replace(/^\uFEFF/, "").trim());
-
-        // First diagnostics block (headers + row count)
         showDiag(
           `<strong>Diagnostics</strong> — rows parsed: <b>${data.length.toLocaleString()}</b> •
-           headers found: <code>${fields.join(", ")||"(none)"} </code> •
+           headers: <code>${fields.join(", ")||"(none)"} </code> •
            delimiter: <code>${meta?.delimiter||"unknown"}</code> •
            preview: <code>${preview}</code>`
         );
 
-        // Guard
         const needed = [COLS.id, COLS.name, COLS.street, COLS.city, COLS.zip, COLS.countryA3];
         const missing = needed.filter(h => !fields.includes(h));
         if (missing.length) { statusEl.textContent = `Error: Missing header(s): ${missing.join(", ")}`; return; }
         if (!data.length)   { statusEl.textContent = "Error: Parsed 0 data rows."; return; }
 
-        // Build records
         for (const row of data) {
           records.push({
             [COLS.id]: (row[COLS.id]||"").toString().trim(),
@@ -315,22 +282,21 @@ fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
             [COLS.city]: (row[COLS.city]||"").toString().trim(),
             [COLS.zip]: (row[COLS.zip]||"").toString().trim(),
             [COLS.countryA3]: (row[COLS.countryA3]||"").toString().trim(),
-            lat: "",
-            lon: ""
+            lat: "", lon: ""
           });
         }
 
-        // Apply partitioning (with diagnostics)
+        // Apply partitioning
         activeRows = applyPartitioning(records);
 
-        // If slice is empty, show table state and stop
+        // Show table immediately (IDs & Names visible while geocoding runs)
         renderTable(activeRows);
         if (!activeRows.length) {
           statusEl.textContent = "No rows in this slice. Click 'Use FULL slice' or adjust URL parameters.";
           return;
         }
 
-        // Build tasks (skip already cached)
+        // Tasks: skip cached
         const tasks = activeRows
           .filter(r => {
             const key = (buildAddress(r).toLowerCase() + '|' + alpha3To2((r[COLS.countryA3]||'').toUpperCase()));
@@ -340,12 +306,8 @@ fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
             const addr = buildAddress(r);
             const c = (r[COLS.countryA3]||"").trim().toUpperCase();
             if (!addr) { r.status="no address"; return; }
-            try {
-              const { lat, lon } = await geocode(addr, c);
-              r.lat = lat; r.lon = lon; r.status="ok";
-            } catch {
-              r.status="fail";
-            }
+            try { const { lat, lon } = await geocode(addr, c); r.lat = lat; r.lon = lon; r.status="ok"; }
+            catch { r.status="fail"; }
             if (idx % 25 === 0) renderTable(activeRows);
           });
 
