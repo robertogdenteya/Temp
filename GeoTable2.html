@@ -1,27 +1,27 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Teya Merchant Coordinates — Partitioned Geocoding</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    body { margin:0; font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
-    header { padding:12px 16px; border-bottom:1px solid #ddd; display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
-    h1 { margin:0; font-size:18px; }
-    .badge { font-size:12px; background:#f3f4f6; border:1px solid #e5e7eb; padding:4px 8px; border-radius:999px; }
-    .diag { margin:10px 16px; padding:8px 10px; border:1px solid #dbeafe; background:#eff6ff; color:#1e3a8a; border-radius:8px; font-size:12px; }
-    .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid #ddd; }
-    button { padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#fff; cursor:pointer; }
-    button:disabled { opacity:.6; cursor:not-allowed; }
-    .status { margin-left:auto; font-variant-numeric:tabular-nums; }
-    .wrap { padding:10px 16px; }
-    .table-wrap { max-height:70vh; overflow:auto; border:1px solid #ddd; border-radius:8px; }
-    table { border-collapse:collapse; width:100%; font-size:13px; }
-    th,td { border-bottom:1px solid #eee; padding:6px 8px; white-space:nowrap; }
-    th { background:#fafafa; position:sticky; top:0; text-align:left; }
-    code { background:#f3f4f6; padding:1px 4px; border-radius:4px; }
-  </style>
-  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+<meta charset="utf-8" />
+<title>Teya Merchant Coordinates — Partitioned Geocoding (Debug)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  body { margin:0; font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+  header { padding:12px 16px; border-bottom:1px solid #ddd; display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+  h1 { margin:0; font-size:18px; }
+  .badge { font-size:12px; background:#f3f4f6; border:1px solid #e5e7eb; padding:4px 8px; border-radius:999px; }
+  .diag { margin:10px 16px; padding:8px 10px; border:1px solid #dbeafe; background:#eff6ff; color:#1e3a8a; border-radius:8px; font-size:12px; }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid #ddd; }
+  button { padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#fff; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
+  .status { margin-left:auto; font-variant-numeric:tabular-nums; }
+  .wrap { padding:10px 16px; }
+  .table-wrap { max-height:70vh; overflow:auto; border:1px solid #ddd; border-radius:8px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th,td { border-bottom:1px solid #eee; padding:6px 8px; white-space:nowrap; }
+  th { background:#fafafa; position:sticky; top:0; text-align:left; }
+  code { background:#f3f4f6; padding:1px 4px; border-radius:4px; }
+</style>
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 </head>
 <body>
 <header>
@@ -40,6 +40,7 @@
       <option>3</option><option selected>5</option><option>8</option><option>10</option>
     </select>
   </label>
+  <button id="resetFiltersBtn" title="Ignore URL filters and use FULL dataset">Use FULL slice</button>
   <span class="status" id="status">Loading…</span>
 </div>
 
@@ -90,9 +91,11 @@ const statusEl = document.getElementById("status");
 const concurrencySel = document.getElementById("concurrency");
 const sliceBadge = document.getElementById("sliceBadge");
 const diagBox = document.getElementById("diag");
+const resetFiltersBtn = document.getElementById("resetFiltersBtn");
 
 /* ====== Data + cache ====== */
 const records = [];
+let activeRows = []; // rows this tab processes (subset)
 const geocodeCache = new Map();
 function loadCache() {
   try {
@@ -195,16 +198,69 @@ async function geocode(addr, a3) {
 
 /* ====== Partitioning (Modulo by URL) ====== */
 function num(v, d=null){ const n = Number(v); return Number.isFinite(n) ? n : d; }
-const params = new URLSearchParams(location.search);
-const PART = num(params.get('part')); // 0-based
-const OF   = num(params.get('of'));
-const START_INDEX = num(params.get('start_index'));
-const END_INDEX   = num(params.get('end_index'));
-const START_ID    = num(params.get('start_id'));
-const END_ID      = num(params.get('end_id'));
+function showDiag(html){ diagBox.style.display="block"; diagBox.innerHTML = html; }
 
-/* UI: copy / download */
-let activeRows = [];
+function applyPartitioning(records){
+  const params = new URLSearchParams(location.search);
+  const PART = num(params.get('part'));
+  const OF   = num(params.get('of'));
+  const START_INDEX = num(params.get('start_index'));
+  const END_INDEX   = num(params.get('end_index'));
+  const START_ID    = num(params.get('start_id'));
+  const END_ID      = num(params.get('end_id'));
+
+  let idxs = records.map((_, i) => i);
+  const counts = { total: idxs.length };
+
+  // Optional ID range filter (only if range provided & IDs parse as numbers)
+  if (START_ID != null || END_ID != null) {
+    idxs = idxs.filter(i => {
+      const idVal = Number(records[i][COLS.id]);
+      if (!Number.isFinite(idVal)) return false;
+      if (START_ID != null && idVal < START_ID) return false;
+      if (END_ID   != null && idVal > END_ID)   return false;
+      return true;
+    });
+  }
+  counts.afterId = idxs.length;
+
+  // Optional index range (inclusive)
+  if (START_INDEX != null || END_INDEX != null) {
+    const si = START_INDEX ?? 0;
+    const ei = END_INDEX ?? (records.length - 1);
+    idxs = idxs.filter(i => i >= si && i <= ei);
+  }
+  counts.afterIndex = idxs.length;
+
+  // Modulo partition
+  let moduloApplied = false;
+  if (PART != null && OF != null && OF > 1 && PART >= 0 && PART < OF) {
+    idxs = idxs.filter(i => (i % OF) === PART);
+    moduloApplied = true;
+  }
+  counts.afterModulo = idxs.length;
+
+  // Diagnostics message
+  const bits = [];
+  bits.push(`<b>Total rows:</b> ${counts.total.toLocaleString()}`);
+  bits.push(`<b>After ID filter:</b> ${counts.afterId.toLocaleString()}`);
+  bits.push(`<b>After index filter:</b> ${counts.afterIndex.toLocaleString()}`);
+  bits.push(`<b>After modulo:</b> ${counts.afterModulo.toLocaleString()} ${moduloApplied ? `(part ${PART+1} of ${OF})` : ''}`);
+  showDiag(bits.join(' • '));
+
+  // Badge text
+  if (moduloApplied) {
+    sliceBadge.textContent = `Slice: part ${PART+1} of ${OF} • ${idxs.length.toLocaleString()} rows`;
+  } else if (counts.afterIndex !== counts.total || counts.afterId !== counts.total) {
+    sliceBadge.textContent = `Slice: filtered • ${idxs.length.toLocaleString()} rows`;
+  } else {
+    sliceBadge.textContent = `Slice: FULL • ${idxs.length.toLocaleString()} rows`;
+  }
+
+  return idxs.map(i => records[i]);
+}
+
+/* ====== UI: copy / download ====== */
 copyBtn.onclick = async ()=>{
   await navigator.clipboard.writeText(toCsv(activeRows));
   copyBtn.textContent = "Copied!";
@@ -217,12 +273,16 @@ downloadBtn.onclick = ()=>{
   a.href = url; a.download = "merchant-coordinates.csv";
   a.click(); URL.revokeObjectURL(url);
 };
+resetFiltersBtn.onclick = ()=>{
+  // Strip all query params and reload to use FULL dataset
+  const url = location.origin + location.pathname;
+  location.assign(url);
+};
 
 /* ====== Main load ====== */
 fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
   .then(r=>{ if(!r.ok) throw new Error(`CSV fetch failed: ${r.status}`); return r.text(); })
   .then(text=>{
-    // Keep a tiny preview for diagnostics if parsing fails
     const preview = text.slice(0, 250).replace(/\n/g, "\\n");
     Papa.parse(text, {
       header:true,
@@ -230,31 +290,23 @@ fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
       delimitersToGuess:[",",";","\t","|"],
       complete: ({ data, meta }) => {
         const rawFields = meta?.fields || Object.keys(data[0] || {});
-        // normalise header names, trim BOM
         const fields = rawFields.map(h => (h||"").replace(/^\uFEFF/, "").trim());
+
+        // First diagnostics block (headers + row count)
+        showDiag(
+          `<strong>Diagnostics</strong> — rows parsed: <b>${data.length.toLocaleString()}</b> •
+           headers found: <code>${fields.join(", ")||"(none)"} </code> •
+           delimiter: <code>${meta?.delimiter||"unknown"}</code> •
+           preview: <code>${preview}</code>`
+        );
+
+        // Guard
         const needed = [COLS.id, COLS.name, COLS.street, COLS.city, COLS.zip, COLS.countryA3];
         const missing = needed.filter(h => !fields.includes(h));
+        if (missing.length) { statusEl.textContent = `Error: Missing header(s): ${missing.join(", ")}`; return; }
+        if (!data.length)   { statusEl.textContent = "Error: Parsed 0 data rows."; return; }
 
-        // Diagnostics banner
-        diagBox.style.display = "block";
-        diagBox.innerHTML = `
-          <strong>Diagnostics</strong> — rows parsed: <b>${data.length.toLocaleString()}</b> •
-          headers found: <code>${fields.join(", ")||"(none)"} </code><br/>
-          delimiter guessed: <code>${meta?.delimiter||"unknown"}</code> •
-          preview: <code>${preview}</code>
-        `;
-
-        if (missing.length) {
-          statusEl.textContent = `Error: Missing header(s): ${missing.join(", ")}`;
-          console.error("Headers found:", fields);
-          return;
-        }
-        if (!data.length) {
-          statusEl.textContent = "Error: Parsed 0 data rows. Check delimiter/line endings/encoding.";
-          return;
-        }
-
-        // Build master records
+        // Build records
         for (const row of data) {
           records.push({
             [COLS.id]: (row[COLS.id]||"").toString().trim(),
@@ -268,75 +320,42 @@ fetch(CSV_PATH + "?t=" + Date.now(), { cache:"no-store" })
           });
         }
 
-        // Partition indices
-        let idxs = records.map((_, i) => i);
+        // Apply partitioning (with diagnostics)
+        activeRows = applyPartitioning(records);
 
-        // Optional ID range filter (numeric only if range provided)
-        if (START_ID != null || END_ID != null) {
-          idxs = idxs.filter(i => {
-            const idVal = Number(records[i][COLS.id]);
-            if (!Number.isFinite(idVal)) return false;
-            if (START_ID != null && idVal < START_ID) return false;
-            if (END_ID   != null && idVal > END_ID)   return false;
-            return true;
-          });
-        }
-
-        // Optional index range filter (inclusive)
-        if (START_INDEX != null || END_INDEX != null) {
-          const si = START_INDEX ?? 0;
-          const ei = END_INDEX ?? (records.length - 1);
-          idxs = idxs.filter(i => i >= si && i <= ei);
-        }
-
-        // Modulo split (primary)
-        if (PART != null && OF != null && OF > 1 && PART >= 0 && PART < OF) {
-          idxs = idxs.filter(i => (i % OF) === PART);
-          sliceBadge.textContent = `Slice: part ${PART+1} of ${OF} (modulo) • ${idxs.length.toLocaleString()} rows`;
-        } else {
-          const labelBits = [];
-          if (START_INDEX!=null || END_INDEX!=null) labelBits.push(`rows ${START_INDEX??0}–${(END_INDEX??(records.length-1))}`);
-          if (START_ID!=null || END_ID!=null) labelBits.push(`IDs ${START_ID??'…'}–${END_ID??'…'}`);
-          sliceBadge.textContent = labelBits.length ? `Slice: ${labelBits.join(" • ")} • ${idxs.length.toLocaleString()} rows`
-                                                    : `Slice: FULL • ${idxs.length.toLocaleString()} rows`;
-        }
-
-        // Build subset rows
-        activeRows = idxs.map(i => records[i]);
-
-        // Skip already-cached addresses (avoid duplicate work across tabs)
-        const filtered = activeRows.filter(r => {
-          const key = (buildAddress(r).toLowerCase() + '|' + alpha3To2((r[COLS.countryA3]||'').toUpperCase()));
-          return !geocodeCache.has(key);
-        });
-
-        // Render initial table
+        // If slice is empty, show table state and stop
         renderTable(activeRows);
+        if (!activeRows.length) {
+          statusEl.textContent = "No rows in this slice. Click 'Use FULL slice' or adjust URL parameters.";
+          return;
+        }
 
-        // Build geocoding tasks
-        const tasks = filtered.map((r, idx) => async ()=>{
-          const addr = buildAddress(r);
-          const c = (r[COLS.countryA3]||"").trim().toUpperCase();
-          if (!addr) { r.status="no address"; return; }
-          try {
-            const { lat, lon } = await geocode(addr, c);
-            r.lat = lat; r.lon = lon; r.status="ok";
-          } catch {
-            r.status="fail";
-          }
-          if (idx % 25 === 0) renderTable(activeRows);
-        });
+        // Build tasks (skip already cached)
+        const tasks = activeRows
+          .filter(r => {
+            const key = (buildAddress(r).toLowerCase() + '|' + alpha3To2((r[COLS.countryA3]||'').toUpperCase()));
+            return !geocodeCache.has(key);
+          })
+          .map((r, idx) => async ()=>{
+            const addr = buildAddress(r);
+            const c = (r[COLS.countryA3]||"").trim().toUpperCase();
+            if (!addr) { r.status="no address"; return; }
+            try {
+              const { lat, lon } = await geocode(addr, c);
+              r.lat = lat; r.lon = lon; r.status="ok";
+            } catch {
+              r.status="fail";
+            }
+            if (idx % 25 === 0) renderTable(activeRows);
+          });
 
         const limit = parseInt(concurrencySel.value, 10) || 5;
-        statusEl.textContent = `Geocoding ${filtered.length.toLocaleString()} of ${activeRows.length.toLocaleString()} (concurrency ×${limit})…`;
+        statusEl.textContent = `Geocoding ${tasks.length.toLocaleString()} of ${activeRows.length.toLocaleString()} (concurrency ×${limit})…`;
 
         withConcurrency(tasks, limit).then(()=>{
           renderTable(activeRows);
           statusEl.textContent = `Done: ${activeRows.filter(x=>x.lat&&x.lon).length}/${activeRows.length} geocoded`;
         });
-      },
-      error: (err) => {
-        statusEl.textContent = "Parse error: " + (err?.message || err);
       }
     });
   })
