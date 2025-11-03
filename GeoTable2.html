@@ -64,11 +64,11 @@ const CSV_PATH = "active_merchants_Oct_2025.csv";
 
 /* Column names (case-sensitive to match your CSV) */
 const COLS = {
-  id: "ID",
+  id: "MERCHANT_ID",
   name: "MERCHANT_NAME",
-  street: "address.street",
-  city: "address.CITY",     // NOTE: your CSV used CITY uppercase
-  zip: "address.ZIP",       // NOTE: your CSV used ZIP uppercase
+  street: "MERCHANT_ADDRESS_LINE_1",
+  city: "MERCHANT_CITY",   // note: CITY and ZIP are upper-case in your CSV
+  zip: "MERCHANT_ZIP",
   countryA3: "MERCHANT_COUNTRY"
 };
 
