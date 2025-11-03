@@ -225,21 +225,24 @@ downloadBtn.onclick = ()=>{
 /* ====== Main load ====== */
 let activeRows = []; // rows this tab will process (subset)
 
-fetch(CSV_PATH)
+fetch(CSV_PATH + "?t=" + Date.now(), { cache: "no-store" })
   .then(r=>{ if(!r.ok) throw new Error(`CSV fetch failed: ${r.status}`); return r.text(); })
   .then(text=>{
     Papa.parse(text, {
       header:true,
       skipEmptyLines:true,
       complete: ({ data, meta }) => {
-        const fields = meta?.fields || Object.keys(data[0]||{});
-        // basic header guard
-        const needed = [COLS.id, COLS.name, COLS.street, COLS.city, COLS.zip, COLS.countryA3];
-        const missing = needed.filter(h => !fields.includes(h));
-        if (missing.length) {
-          statusEl.textContent = `Error: Missing required header(s): ${missing.join(", ")}`;
-          return;
-        }
+        const rawFields = meta?.fields || Object.keys(data[0] || {});
+const fields = rawFields.map(h => (h || "").trim());  // normalize
+
+const needed = [COLS.id, COLS.name, COLS.street, COLS.city, COLS.zip, COLS.countryA3];
+const missing = needed.filter(h => !fields.includes(h));
+
+if (missing.length) {
+  statusEl.textContent = `Error: Missing required header(s): ${missing.join(", ")}. Found: ${fields.join(", ")}`;
+  console.error("Headers found:", fields);
+  return;
+}
 
         // Build master records
         for (const row of data) {
