@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Teya Growth Map — Highlight Country</title>
+<title>Teya Growth Map — Country Focus</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
@@ -15,14 +15,14 @@
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
 <style>
-  :root { --blue:#008BB9; --lime:#E0E722; --ink:#111827; --highlight:#ff0055; }
+  :root { --blue:#008BB9; --lime:#E0E722; --ink:#111827; }
   html, body { height:100%; margin:0; background:#fff; }
   body { font:13px/1.45 'Inter', sans-serif; color:var(--ink); }
   #map { position:absolute; inset:0; }
 
   .hud { position:absolute; left:12px; top:12px; z-index:500; display:flex; gap:6px; }
   .toolbar {
-    background: rgba(255,255,255,0.75); border:1px solid rgba(17,24,39,0.08);
+    background: rgba(255,255,255,0.82); border:1px solid rgba(17,24,39,0.08);
     backdrop-filter: blur(6px); border-radius:10px; padding:6px 8px;
     display:flex; align-items:center; gap:8px;
   }
@@ -33,12 +33,8 @@
   .btn.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
   .chip {
     position:absolute; left:12px; bottom:12px; z-index:500;
-    background:rgba(255,255,255,0.75); border:1px solid rgba(17,24,39,0.08);
+    background:rgba(255,255,255,0.82); border:1px solid rgba(17,24,39,0.08);
     border-radius:999px; padding:4px 8px;
-  }
-  .q-label {
-    font-weight:800; font-size:32px; color:#0c1f27;
-    background:rgba(255,255,255,0.72); padding:6px 10px; border-radius:12px;
   }
 </style>
 </head>
@@ -64,9 +60,9 @@
       <option value="18">Coarse</option>
     </select>
 
-    <!-- Country highlight selector -->
+    <!-- Country focus selector (A3 codes) -->
     <select id="countrySel">
-      <option value="">– Highlight Country –</option>
+      <option value="">– Focus: All Countries –</option>
     </select>
 
     <button id="fitBtn" class="btn">Fit</button>
@@ -99,7 +95,11 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.
 
 const leafletSvg = L.svg({padding:0.75}).addTo(map);
 const svg = d3.select(leafletSvg._container);
-const g = svg.append("g").attr("class","hex-layer");
+
+// Two hex layers: base (all countries, faded) + focus (selected country, bright)
+const gRoot = svg.append("g").attr("class","hex-root");
+const gBase = gRoot.append("g").attr("class","hex-base");
+const gFocus = gRoot.append("g").attr("class","hex-focus");
 
 let points=[], quarters=[], qEnd={};
 let playTimer=null;
@@ -117,91 +117,86 @@ let highlightedCountry = "";
 
 function qKey(d){ return `${d.getFullYear()}-Q${Math.floor(d.getMonth()/3)+1}`; }
 
-function renderHexes(latlngs){
-  const projected = latlngs.map(([lat,lon])=>{
-    const pt = map.latLngToLayerPoint([lat,lon]);
-    return {x:pt.x, y:pt.y};
+/* ===== RENDER HEXES (base + focus) ===== */
+function renderHexes(pts){
+  gBase.selectAll("path.hex-base").remove();
+  gFocus.selectAll("path.hex-focus").remove();
+  if(!pts.length) return;
+
+  const projectedAll = pts.map(p=>{
+    const pt = map.latLngToLayerPoint([p.lat,p.lon]);
+    return {x:pt.x, y:pt.y, country:p.country};
   });
 
   const radius = parseInt(hexSize.value)||14;
   const hexbin = d3.hexbin().radius(radius).x(d=>d.x).y(d=>d.y);
-  const bins = hexbin(projected);
+  const binsAll = hexbin(projectedAll);
 
-  let maxCount = d3.max(bins,b=>b.length)||1;
+  let maxCount = d3.max(binsAll,b=>b.length)||1;
   if(maxCount<3) maxCount=3;
 
-  const color = (scaleSel.value==='blue')
-      ? d3.scaleSequential(d3.interpolateGnBu).domain([0,maxCount])
-      : d3.scaleLinear().domain([0,maxCount*0.5,maxCount])
-        .range(['#f1f3b6','#E0E722','#D4D72C']).clamp(true);
+  const baseColor = (scaleSel.value==='blue')
+    ? d3.scaleSequential(d3.interpolateGnBu).domain([0,maxCount])
+    : d3.scaleLinear().domain([0,maxCount*0.5,maxCount])
+      .range(['#edf0ba','#e4ea76','#E0E722']).clamp(true);
 
-  const sel = g.selectAll("path.hex").data(bins, d=>d.x+"-"+d.y);
+  const focusColor = (scaleSel.value==='blue')
+    ? d3.scaleSequential(d3.interpolateBuGn).domain([0,maxCount])
+    : d3.scaleLinear().domain([0,maxCount*0.5,maxCount])
+      .range(['#f7f9c2','#f0f22e','#d7db00']).clamp(true);
 
-  sel.exit().remove();
+  // Base layer = all bins, faded
+  gBase.selectAll("path.hex-base")
+    .data(binsAll, d=>d.x+"-"+d.y)
+    .enter().append("path")
+      .attr("class","hex-base")
+      .attr("transform", d=>`translate(${d.x},${d.y})`)
+      .attr("d", hexbin.hexagon())
+      .attr("fill", d=>baseColor(d.length))
+      .attr("stroke","#fff")
+      .attr("stroke-width",0.4)
+      .attr("fill-opacity", highlightedCountry ? 0.25 : 0.9); // fade if focusing
 
-  sel.attr("transform", d=>`translate(${d.x},${d.y})`)
-     .attr("d",hexbin.hexagon())
-     .attr("fill", d=>color(d.length))
-     .attr("stroke","#fff")
-     .attr("stroke-width",0.5)
-     .attr("fill-opacity",0.9);
-
-  sel.enter().append("path")
-     .attr("class","hex")
-     .attr("transform",d=>`translate(${d.x},${d.y})`)
-     .attr("d",hexbin.hexagon())
-     .attr("fill",d=>color(d.length))
-     .attr("stroke","#fff")
-     .attr("stroke-width",0.5)
-     .attr("fill-opacity",0.9);
-}
-
-/* ===== COUNTRY HIGHLIGHT LAYER ===== */
-let countryOutlineLayer=null;
-
-function highlightCountry(country){
-  highlightedCountry = country;
-  if(countryOutlineLayer){
-    map.removeLayer(countryOutlineLayer);
-    countryOutlineLayer=null;
+  // Focus layer = only bins that contain at least one point in the selected country
+  if (highlightedCountry) {
+    // Map of bin key → count for focus points
+    const focusPoints = projectedAll.filter(p=>p.country===highlightedCountry);
+    if (focusPoints.length) {
+      const binsFocus = hexbin(focusPoints);
+      gFocus.selectAll("path.hex-focus")
+        .data(binsFocus, d=>d.x+"-"+d.y)
+        .enter().append("path")
+          .attr("class","hex-focus")
+          .attr("transform", d=>`translate(${d.x},${d.y})`)
+          .attr("d", hexbin.hexagon())
+          .attr("fill", d=>focusColor(d.length))
+          .attr("stroke","#111827")
+          .attr("stroke-width",0.6)
+          .attr("fill-opacity",0.95);
+    }
   }
-  if(!country) return;
-
-  const pts = points.filter(p=>p.country===country);
-  if(!pts.length) return;
-
-  // Create convex hull in lon,lat space
-  const hull = d3.polygonHull(pts.map(p=>[p.lon,p.lat]));
-  if(!hull) return;
-
-  const polyLatLng = hull.map(d=>[d[1],d[0]]);
-  countryOutlineLayer = L.polygon(polyLatLng,{
-    color:"#ff0055",
-    weight:3,
-    fill:false
-  }).addTo(map);
 }
 
 /* ===== MAIN VIEW UPDATE ===== */
 function setView(idx){
+  if(!quarters.length) return;
   const q=quarters[idx];
   const end=qEnd[q]??-1;
-  let data=[];
+  let slicePoints=[];
   if(end<0){ renderHexes([]); return; }
 
   if(modeSel.value==='cum'){
-    data = points.slice(0,end+1).map(p=>[p.lat,p.lon]);
+    slicePoints = points.slice(0,end+1);
   } else {
     const prev = idx>0 ? (qEnd[quarters[idx-1]]??-1) : -1;
-    data = points.slice(prev+1,end+1).map(p=>[p.lat,p.lon]);
+    slicePoints = points.slice(prev+1,end+1);
   }
 
-  renderHexes(data);
-  highlightCountry(highlightedCountry);
+  renderHexes(slicePoints);
 
   totalCountEl.textContent = (modeSel.value==='cum'
     ? (end+1)
-    : data.length
+    : slicePoints.length
   ).toLocaleString();
 }
 
@@ -222,7 +217,7 @@ hexSize.addEventListener("change",()=>setView(+slider.value));
 fitBtn.addEventListener("click",fit);
 
 countrySel.addEventListener("change",e=>{
-  highlightedCountry = e.target.value;
+  highlightedCountry = e.target.value; // A3 code
   setView(+slider.value);
 });
 
@@ -236,7 +231,7 @@ playBtn.addEventListener("click",()=>{
     if(i>=+slider.max){ clearInterval(playTimer); playTimer=null; playBtn.textContent="▶"; return; }
     slider.value=i+1;
     slider.dispatchEvent(new Event('input'));
-  },150);
+  },150); // playback speed
 });
 
 /* ===== CSV LOAD WITH ROBUST HEADER HANDLING ===== */
@@ -246,7 +241,6 @@ playBtn.addEventListener("click",()=>{
   const parsed = Papa.parse(text,{header:true,skipEmptyLines:true});
 
   const metaFields = parsed.meta?.fields || [];
-  // Build a map from CLEAN header → RAW header
   const fieldMap = {};
   metaFields.forEach(f=>{
     if(!f) return;
@@ -286,10 +280,11 @@ playBtn.addEventListener("click",()=>{
   points=rows;
   totalCountEl.textContent = points.length.toLocaleString();
 
-  // populate selector (3-letter codes as given)
+  // populate selector with A3 codes as-is
   [...countries].sort().forEach(c=>{
     const opt=document.createElement("option");
-    opt.value=c; opt.textContent=c;
+    opt.value=c;
+    opt.textContent=c;
     countrySel.appendChild(opt);
   });
 
