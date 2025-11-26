@@ -55,6 +55,7 @@
       <option value="blue">Blue</option>
     </select>
     <select id="hexSize">
+     <option value="5">Ultra Fine</option>
       <option value="10">Fine</option>
       <option value="14" selected>Normal</option>
       <option value="18">Coarse</option>
@@ -143,7 +144,7 @@ function renderHexes(pts){
   const focusColor = (scaleSel.value==='blue')
     ? d3.scaleSequential(d3.interpolateBuGn).domain([0,maxCount])
     : d3.scaleLinear().domain([0,maxCount*0.5,maxCount])
-      .range(['#f7f9c2','#f0f22e','#d7db00']).clamp(true);
+      .range(['#E4E66D','#D4D72C','#C0C42D']).clamp(true);
 
   // Base layer = all bins, faded
   gBase.selectAll("path.hex-base")
