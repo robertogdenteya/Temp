@@ -64,7 +64,7 @@
       <option value="18">Coarse</option>
     </select>
 
-    <!-- NEW: Country highlight selector -->
+    <!-- Country highlight selector -->
     <select id="countrySel">
       <option value="">– Highlight Country –</option>
     </select>
@@ -81,10 +81,11 @@ const COLS = {
   lat: "Latitude",
   lon: "Longitude",
   date: "START_OF_MERCHANT_REPORTING",
-  country: "Merchant_Country"
+  country: "MERCHANT_COUNTRY"
 };
 
 const map = L.map('map').setView([55.5, -3], 5);
+
 L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
   maxZoom: 19
 }).addTo(map);
@@ -109,8 +110,9 @@ const modeSel=document.getElementById("modeSel");
 const scaleSel=document.getElementById("scaleSel");
 const hexSize=document.getElementById("hexSize");
 const fitBtn=document.getElementById("fitBtn");
-
 const countrySel=document.getElementById("countrySel");
+const totalCountEl=document.getElementById("totalCount");
+
 let highlightedCountry = "";
 
 function qKey(d){ return `${d.getFullYear()}-Q${Math.floor(d.getMonth()/3)+1}`; }
@@ -154,7 +156,7 @@ function renderHexes(latlngs){
      .attr("fill-opacity",0.9);
 }
 
-/* ===== ADD COUNTRY HIGHLIGHT LAYER ===== */
+/* ===== COUNTRY HIGHLIGHT LAYER ===== */
 let countryOutlineLayer=null;
 
 function highlightCountry(country){
@@ -165,19 +167,14 @@ function highlightCountry(country){
   }
   if(!country) return;
 
-  // Filter points belonging to that country
   const pts = points.filter(p=>p.country===country);
   if(!pts.length) return;
 
-  // Create polygon hull of merchant points for that country (simple convex hull)
-  const coords = pts.map(p=>[p.lat,p.lon]);
-  const hull = d3.polygonHull(coords.map(x=>[x[1],x[0]])); // lon,lat for hull
-
+  // Create convex hull in lon,lat space
+  const hull = d3.polygonHull(pts.map(p=>[p.lon,p.lat]));
   if(!hull) return;
 
-  // Convert hull back to Leaflet LatLng order
   const polyLatLng = hull.map(d=>[d[1],d[0]]);
-
   countryOutlineLayer = L.polygon(polyLatLng,{
     color:"#ff0055",
     weight:3,
@@ -200,9 +197,12 @@ function setView(idx){
   }
 
   renderHexes(data);
-
-  // Highlight selected country after render
   highlightCountry(highlightedCountry);
+
+  totalCountEl.textContent = (modeSel.value==='cum'
+    ? (end+1)
+    : data.length
+  ).toLocaleString();
 }
 
 /* ===== FIT MAP ===== */
@@ -239,38 +239,64 @@ playBtn.addEventListener("click",()=>{
   },150);
 });
 
-/* ===== LOAD CSV ===== */
+/* ===== CSV LOAD WITH ROBUST HEADER HANDLING ===== */
 (async function(){
   const res = await fetch(CSV_PATH+"?t="+Date.now());
   const text = await res.text();
   const parsed = Papa.parse(text,{header:true,skipEmptyLines:true});
 
+  const metaFields = parsed.meta?.fields || [];
+  // Build a map from CLEAN header → RAW header
+  const fieldMap = {};
+  metaFields.forEach(f=>{
+    if(!f) return;
+    const clean = f.replace(/^\uFEFF/,"").trim();
+    fieldMap[clean] = f;
+  });
+
+  console.log("CSV headers (clean → raw):", fieldMap);
+
+  function getVal(row, logical){
+    const raw = fieldMap[logical];
+    return raw ? row[raw] : undefined;
+  }
+
   const rows=[];
   const countries=new Set();
 
   for(const r of parsed.data){
-    const lat=parseFloat(r[COLS.lat]);
-    const lon=parseFloat(r[COLS.lon]);
+    const lat=parseFloat(getVal(r, COLS.lat));
+    const lon=parseFloat(getVal(r, COLS.lon));
     if(!isFinite(lat)||!isFinite(lon)) continue;
 
-    const d=new Date(r[COLS.date]); if(isNaN(d)) continue;
+    const dRaw = getVal(r, COLS.date);
+    const d=new Date(dRaw);
+    if(isNaN(d)) continue;
 
-    const c=r[COLS.country]||"";
-    countries.add(c);
+    const c=(getVal(r, COLS.country) || "").toString().trim();
+    if(c) countries.add(c);
 
     rows.push({lat,lon,date:d,q:qKey(d),country:c});
   }
 
+  console.log("Distinct countries found:", Array.from(countries).sort());
+  console.log("Total usable rows:", rows.length);
+
   rows.sort((a,b)=>a.date-b.date);
   points=rows;
+  totalCountEl.textContent = points.length.toLocaleString();
 
-  // populate selector
+  // populate selector (3-letter codes as given)
   [...countries].sort().forEach(c=>{
-    if(!c) return;
     const opt=document.createElement("option");
     opt.value=c; opt.textContent=c;
     countrySel.appendChild(opt);
   });
+
+  if(!rows.length){
+    console.warn("No usable rows found. Check column names/values.");
+    return;
+  }
 
   // build quarter index
   const startQ = qKey(rows[0].date);
@@ -278,10 +304,14 @@ playBtn.addEventListener("click",()=>{
   const endQ = qKey(now);
 
   quarters=[];
-  let [y,q]=startQ.split("-Q").map(Number);
+  let parts = startQ.split("-Q");
+  let y = parseInt(parts[0],10);
+  let q = parseInt(parts[1],10);
+
   while(true){
-    quarters.push(`${y}-Q${q}`);
-    if(`${y}-Q${q}`===endQ) break;
+    const label = `${y}-Q${q}`;
+    quarters.push(label);
+    if(label===endQ) break;
     q++; if(q>4){ q=1; y++; }
   }
 
