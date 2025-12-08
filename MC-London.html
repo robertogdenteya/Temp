@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Teya London Marketing Campaign Map</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+  :root {
+    --blue:#008BB9;
+    --lime:#E0E722;
+    --ink:#111827;
+  }
+
+  html, body {
+    height:100%;
+    margin:0;
+    background:#fff;
+  }
+
+  body {
+    font:13px/1.45 'Inter', sans-serif;
+    color:var(--ink);
+  }
+
+  #map {
+    position:absolute;
+    inset:0;
+  }
+
+  .hud {
+    position:absolute;
+    left:12px;
+    top:12px;
+    z-index:500;
+    display:flex;
+    gap:6px;
+  }
+
+  .toolbar {
+    background:rgba(255,255,255,0.9);
+    border:1px solid rgba(17,24,39,0.08);
+    backdrop-filter:blur(6px);
+    border-radius:10px;
+    padding:6px 8px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    box-shadow:0 8px 20px rgba(15,23,42,0.08);
+  }
+
+  .btn {
+    padding:4px 10px;
+    border-radius:999px;
+    border:1px solid #d1d5db;
+    background:#fff;
+    cursor:pointer;
+    font:inherit;
+    height:26px;
+    display:flex;
+    align-items:center;
+    gap:4px;
+    white-space:nowrap;
+  }
+
+  .btn.primary {
+    background:var(--blue);
+    border-color:var(--blue);
+    color:#fff;
+    font-weight:600;
+  }
+
+  .btn.secondary {
+    background:#f9fafb;
+  }
+
+  .range {
+    width:120px;
+  }
+
+  .label {
+    font-size:11px;
+    color:#4b5563;
+  }
+
+  .chip {
+    position:absolute;
+    left:12px;
+    bottom:12px;
+    z-index:500;
+    background:rgba(255,255,255,0.92);
+    border:1px solid rgba(17,24,39,0.08);
+    border-radius:999px;
+    padding:4px 10px;
+    font-size:12px;
+    display:flex;
+    align-items:center;
+    gap:4px;
+    box-shadow:0 8px 20px rgba(15,23,42,0.08);
+  }
+
+  .chip strong {
+    font-weight:600;
+  }
+</style>
+</head>
+
+<body>
+<div id="map"></div>
+
+<div class="hud">
+  <div class="toolbar">
+    <button id="playBtn" class="btn primary">▶ Play</button>
+    <button id="resetBtn" class="btn secondary">Reset</button>
+
+    <div class="label">
+      Duration:
+      <input id="durationSlider" type="range" min="5" max="60" step="1" value="20" class="range" />
+      <span id="durationLabel">20s</span>
+    </div>
+  </div>
+</div>
+
+<div class="chip">
+  <span id="countLabel"><strong>0</strong> of 0 locations</span>
+</div>
+
+<script>
+  // CSV and column config
+  const CSV_PATH = "LondonMarketingCampaign.csv";
+  const COLS = {
+    town: "Town",
+    postcode: "PostCode",
+    lat: "Latitude",
+    lon: "Longitude"
+  };
+
+  // Map setup
+  const map = L.map("map").setView([51.5074, -0.1278], 11);
+
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
+    maxZoom: 19
+  }).addTo(map);
+
+  map.createPane("labels");
+  map.getPane("labels").style.zIndex = 650;
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png", {
+    pane: "labels",
+    maxZoom: 19
+  }).addTo(map);
+
+  // Custom Teya pin icon - update iconUrl to match your asset
+  const teyaIcon = L.icon({
+    iconUrl: "teya-pin.png", // <- change this to your logo file name if different
+    iconSize: [32, 32],
+    iconAnchor: [16, 32],
+    popupAnchor: [0, -28]
+  });
+
+  const markersLayer = L.layerGroup().addTo(map);
+
+  let points = [];
+  let playTimer = null;
+  let currentIndex = 0;
+
+  const playBtn = document.getElementById("playBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const durationSlider = document.getElementById("durationSlider");
+  const durationLabel = document.getElementById("durationLabel");
+  const countLabel = document.getElementById("countLabel");
+
+  function updateDurationLabel() {
+    durationLabel.textContent = durationSlider.value + "s";
+  }
+
+  function updateCountLabel() {
+    countLabel.innerHTML =
+      "<strong>" + currentIndex.toLocaleString() + "</strong> of " +
+      points.length.toLocaleString() + " locations";
+  }
+
+  function clearTimer() {
+    if (playTimer) {
+      clearInterval(playTimer);
+      playTimer = null;
+    }
+  }
+
+  function resetAnimation() {
+    clearTimer();
+    markersLayer.clearLayers();
+    currentIndex = 0;
+    updateCountLabel();
+    playBtn.textContent = "▶ Play";
+  }
+
+  function startAnimation() {
+    if (!points.length) return;
+
+    // If starting from scratch, clear markers
+    if (currentIndex === 0) {
+      markersLayer.clearLayers();
+    }
+
+    const durationSecs = parseInt(durationSlider.value, 10) || 20;
+    const interval = Math.max(10, (durationSecs * 1000) / points.length);
+
+    playBtn.textContent = "⏸ Pause";
+
+    playTimer = setInterval(() => {
+      if (currentIndex >= points.length) {
+        clearTimer();
+        playBtn.textContent = "▶ Play";
+        return;
+      }
+
+      const p = points[currentIndex];
+
+      const marker = L.marker([p.lat, p.lon], { icon: teyaIcon });
+      let popup = "";
+      if (p.town) popup += "<strong>" + p.town + "</strong><br>";
+      if (p.postcode) popup += p.postcode;
+      if (popup) marker.bindPopup(popup);
+
+      markersLayer.addLayer(marker);
+
+      currentIndex++;
+      updateCountLabel();
+    }, interval);
+  }
+
+  function togglePlayPause() {
+    if (!points.length) return;
+
+    if (playTimer) {
+      // Pause
+      clearTimer();
+      playBtn.textContent = "▶ Play";
+    } else {
+      // Play or resume
+      startAnimation();
+    }
+  }
+
+  playBtn.addEventListener("click", togglePlayPause);
+  resetBtn.addEventListener("click", resetAnimation);
+  durationSlider.addEventListener("input", () => {
+    updateDurationLabel();
+    // Duration change only affects the next play, not the current timer
+  });
+
+  updateDurationLabel();
+  updateCountLabel();
+
+  // Load CSV and prepare points
+  (async function () {
+    try {
+      const res = await fetch(CSV_PATH + "?t=" + Date.now());
+      const text = await res.text();
+
+      const parsed = Papa.parse(text, {
+        header: true,
+        skipEmptyLines: true
+      });
+
+      const metaFields = parsed.meta && parsed.meta.fields ? parsed.meta.fields : [];
+      const fieldMap = {};
+      metaFields.forEach(f => {
+        if (!f) return;
+        const clean = f.replace(/^\uFEFF/, "").trim();
+        fieldMap[clean] = f;
+      });
+
+      function getVal(row, logical) {
+        const raw = fieldMap[logical];
+        return raw ? row[raw] : undefined;
+      }
+
+      const rows = [];
+      const lats = [];
+      const lons = [];
+
+      for (const r of parsed.data) {
+        const lat = parseFloat(getVal(r, COLS.lat));
+        const lon = parseFloat(getVal(r, COLS.lon));
+        if (!isFinite(lat) || !isFinite(lon)) continue;
+
+        const town = (getVal(r, COLS.town) || "").toString().trim();
+        const postcode = (getVal(r, COLS.postcode) || "").toString().trim();
+
+        rows.push({ lat, lon, town, postcode });
+        lats.push(lat);
+        lons.push(lon);
+      }
+
+      points = rows;
+      currentIndex = 0;
+      updateCountLabel();
+
+      if (points.length && lats.length && lons.length) {
+        const bounds = [
+          [Math.min(...lats), Math.min(...lons)],
+          [Math.max(...lats), Math.max(...lons)]
+        ];
+        map.fitBounds(bounds, { padding: [24, 24] });
+      } else {
+        // Fallback to a generic London view
+        map.setView([51.5074, -0.1278], 11);
+      }
+
+      console.log("Loaded", points.length, "locations for London campaign.");
+    } catch (err) {
+      console.error("Error loading CSV:", err);
+    }
+  })();
+</script>
+</body>
+</html>
