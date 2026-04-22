@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Test Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <!-- MarkerCluster CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
+
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { height: 90vh; width: 100%; }
+    #controls {
+      padding: 10px;
+      background: #f8f8f8;
+      border-bottom: 1px solid #ccc;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 10px;
+      align-items: center;
+    }
+    select, input[type="text"], input[type="date"] {
+      margin-right: 0;
+      padding: 5px;
+    }
+    .filter-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    label {
+      font-size: 14px;
+    }
+    .date-separator {
+      color: #666;
+      font-size: 12px;
+      padding: 0 2px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="controls">
+  <div class="filter-group">
+    <label for="name-search">Search:</label>
+    <input type="text" id="name-search" placeholder="Search by name...">
+  </div>
+
+  <div class="filter-group">
+    <label for="type-filter">Type:</label>
+    <select id="type-filter">
+      <option value="">All</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label for="category-filter">Category:</label>
+    <select id="category-filter">
+      <option value="">All</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label for="classification-filter">Customer Classification:</label>
+    <select id="classification-filter">
+      <option value="">All</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label for="tpv-filter">TPV Range:</label>
+    <select id="tpv-filter">
+      <option value="">All</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label for="start-date-from">Start Date:</label>
+    <input type="date" id="start-date-from">
+    <span class="date-separator">to</span>
+    <input type="date" id="start-date-to">
+  </div>
+</div>
+
+<div id="map"></div>
+
+<!-- Libraries -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<script>
+  let map = L.map('map').setView([54.5, -3], 6); // UK center
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  const markerCluster = L.markerClusterGroup();
+  let allData = [];
+  let allMarkers = [];
+
+  function parseMerchantDate(value) {
+    if (!value) return null;
+
+    // Supports m/d/yyyy or mm/dd/yyyy
+    const parts = String(value).trim().split('/');
+    if (parts.length === 3) {
+      const month = parseInt(parts[0], 10);
+      const day = parseInt(parts[1], 10);
+      const year = parseInt(parts[2], 10);
+
+      if (!isNaN(month) && !isNaN(day) && !isNaN(year)) {
+        const parsed = new Date(year, month - 1, day);
+        if (!isNaN(parsed.getTime())) return parsed;
+      }
+    }
+
+    const fallback = new Date(value);
+    return isNaN(fallback.getTime()) ? null : fallback;
+  }
+
+  function formatPostcode(postcode) {
+    return String(postcode || '').replace(/\n/g, '<br>');
+  }
+
+  // Automated map upload - file location must be same as this html file
+  Papa.parse('https://robertogdenteya.github.io/Temp/MerchantMap-042026.csv', {
+    download: true,
+    header: true,
+    dynamicTyping: true,
+    skipEmptyLines: true,
+    complete: function (results) {
+      allData = results.data.map(row => ({
+        ...row,
+        _merchantStartDate: parseMerchantDate(row.Merchant_Start_Date)
+      }));
+      buildMap(allData);
+      populateFilterOptions(allData);
+    }
+  });
+
+  function buildMap(data) {
+    markerCluster.clearLayers();
+    allMarkers = [];
+
+    data.forEach(row => {
+      const lat = parseFloat(row.Latitude);
+      const lon = parseFloat(row.Longitude);
+      const name = row.Name;
+      const type = row.Type;
+      const category = row.Category;
+      const postcode = row.Postcode;
+      const classification = row.Customer_Classification || '';
+      const tpvBucket = row.TPV_Bucket || '';
+      const startDate = row.Merchant_Start_Date || '';
+
+      if (!isNaN(lat) && !isNaN(lon)) {
+        const customIcon = L.icon({
+          iconUrl: 'https://robertogdenteya.github.io/Temp/teya-icon.png',
+          iconSize: [32, 32],
+          iconAnchor: [16, 32],
+          popupAnchor: [0, -32]
+        });
+
+        const marker = L.marker([lat, lon], { icon: customIcon }).bindPopup(
+          `<strong>${name || ''}</strong><br>` +
+          `${type || ''}<br>` +
+          `${category || ''}<br>` +
+          `${formatPostcode(postcode)}` +
+          `${classification ? `<br>Customer Classification: ${classification}` : ''}` +
+          `${tpvBucket ? `<br>TPV Range: ${tpvBucket}` : ''}` +
+          `${startDate ? `<br>Start Date: ${startDate}` : ''}`
+        );
+
+        marker.type = type;
+        marker.category = category;
+        marker.name = name;
+        marker.classification = classification;
+        marker.tpvBucket = tpvBucket;
+        marker.startDate = row._merchantStartDate;
+        allMarkers.push(marker);
+      }
+    });
+
+    allMarkers.forEach(m => markerCluster.addLayer(m));
+    map.addLayer(markerCluster);
+  }
+
+  function addOptions(selectId, values) {
+    const select = document.getElementById(selectId);
+    values.forEach(value => {
+      if (value === null || value === undefined || value === '') return;
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = value;
+      select.appendChild(opt);
+    });
+  }
+
+  function populateFilterOptions(data) {
+    const uniqueTypes = Array.from(new Set(data.map(row => row.Type))).filter(Boolean).sort();
+    const uniqueCategories = Array.from(new Set(data.map(row => row.Category))).filter(Boolean).sort();
+    const uniqueClassifications = Array.from(new Set(data.map(row => row.Customer_Classification))).filter(Boolean).sort();
+    const uniqueTPVBuckets = Array.from(new Set(data.map(row => row.TPV_Bucket))).filter(Boolean).sort();
+
+    addOptions('type-filter', uniqueTypes);
+    addOptions('category-filter', uniqueCategories);
+    addOptions('classification-filter', uniqueClassifications);
+    addOptions('tpv-filter', uniqueTPVBuckets);
+
+    document.getElementById('type-filter').addEventListener('change', applyFilters);
+    document.getElementById('category-filter').addEventListener('change', applyFilters);
+    document.getElementById('classification-filter').addEventListener('change', applyFilters);
+    document.getElementById('tpv-filter').addEventListener('change', applyFilters);
+    document.getElementById('name-search').addEventListener('input', applyFilters);
+    document.getElementById('start-date-from').addEventListener('change', applyFilters);
+    document.getElementById('start-date-to').addEventListener('change', applyFilters);
+  }
+
+  function applyFilters() {
+    const selectedType = document.getElementById('type-filter').value;
+    const selectedCategory = document.getElementById('category-filter').value;
+    const selectedClassification = document.getElementById('classification-filter').value;
+    const selectedTPV = document.getElementById('tpv-filter').value;
+    const searchTerm = document.getElementById('name-search').value.trim().toLowerCase();
+    const startDateFromValue = document.getElementById('start-date-from').value;
+    const startDateToValue = document.getElementById('start-date-to').value;
+
+    const startDateFrom = startDateFromValue ? new Date(startDateFromValue + 'T00:00:00') : null;
+    const startDateTo = startDateToValue ? new Date(startDateToValue + 'T23:59:59') : null;
+
+    const filtered = allData.filter(row => {
+      const matchType = selectedType ? row.Type === selectedType : true;
+      const matchCategory = selectedCategory ? row.Category === selectedCategory : true;
+      const matchClassification = selectedClassification ? row.Customer_Classification === selectedClassification : true;
+      const matchTPV = selectedTPV ? row.TPV_Bucket === selectedTPV : true;
+      const matchSearch = searchTerm ? String(row.Name || '').toLowerCase().includes(searchTerm) : true;
+
+      const merchantDate = row._merchantStartDate;
+      const matchStartFrom = startDateFrom ? (merchantDate ? merchantDate >= startDateFrom : false) : true;
+      const matchStartTo = startDateTo ? (merchantDate ? merchantDate <= startDateTo : false) : true;
+
+      return matchType && matchCategory && matchClassification && matchTPV && matchSearch && matchStartFrom && matchStartTo;
+    });
+
+    buildMap(filtered);
+  }
+</script>
+
+</body>
+</html>
